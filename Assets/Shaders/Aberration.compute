@@ -1,0 +1,42 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+#pragma kernel TileBufferBuild
+
+struct SplatIndex
+{
+	uint uiTileId;
+	uint uiFragmentIndex;
+	float fFragmentDepth;
+	float fBlurRadius;
+	float2 vScreenPosition;
+};
+
+// Specify registers for these?
+StructuredBuffer<SplatIndex> _iTileSplatData;
+RWStructuredBuffer<SplatIndex> _oTileSplatData;
+
+// Unsure about these types
+Texture2D<float4> _iColor;
+RWTexture2D<float4> _oColor;
+
+Texture2D<float4> _iDepth;
+
+// Create a StructuredBuffer/ComputeBuffer with read only flag.
+StructuredBuffer<int> inputData;
+// Create a StructuredBuffer/ComputeBuffer with read & write flag.
+RWStructuredBuffer<int> outputData;
+
+// We allocate 20 threads one for each number given to the shader.
+// CSMain is the entry point we use we have to define the entry points as kernel.
+[numthreads(20,1,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    // We use the thead id as index for the data.
+    outputData[id.x] = 2 * inputData[id.x];
+}
+
+[numthreads(20,1,1)] // fix this
+void TileBufferBuild(uint3 id : SV_DispatchThreadID)
+{
+    // idk
+}
