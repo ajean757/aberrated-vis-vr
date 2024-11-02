@@ -4,35 +4,26 @@ using UnityEngine.Rendering.RenderGraphModule;
 using UnityEngine.Rendering.RenderGraphModule.Util;
 using UnityEngine.Rendering.Universal;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 
 public class AberrationRenderPass : ScriptableRenderPass
 {
-    private static readonly int horizontalBlurId = Shader.PropertyToID("_HorizontalBlur");
-    private static readonly int verticalBlurId = Shader.PropertyToID("_VerticalBlur");
-    private const string k_BlurTextureName = "_BlurTexture";
-    private const string k_VerticalPassName = "VerticalBlurRenderPass";
-    private const string k_HorizontalPassName = "HorizontalBlurRenderPass";
+    private static readonly int TileSplatParamsSize = 2 * sizeof(uint);
 
     private ComputeShader cs;
 
     private AberrationSettings defaultSettings;
-    //private Material material;
 
-    private RenderTextureDescriptor blurTextureDescriptor;
+    private GraphicsBuffer tileSplatBuffer;
+    private GraphicsBuffer paramsBuffer;
 
-    GraphicsBuffer tileSplatBuffer;
-
-    // public AberrationRenderPass(Material material, AberrationSettings defaultSettings, ComputeShader cs)
     public AberrationRenderPass(AberrationSettings defaultSettings, ComputeShader cs)
     {
-        //this.material = material;
         this.defaultSettings = defaultSettings;
         this.cs = cs;
 
-        blurTextureDescriptor = new RenderTextureDescriptor(Screen.width, Screen.height,
-            RenderTextureFormat.Default, 0);
-
-        tileSplatBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 100, System.Runtime.InteropServices.Marshal.SizeOf(typeof(SplatIndex)));
+        tileSplatBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 100, Marshal.SizeOf(typeof(SplatIndex)));
+        paramsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Constant, 1, TileSplatParamsSize);
     }
 
     private void UpdateAberrationSettings()
@@ -62,7 +53,6 @@ public class AberrationRenderPass : ScriptableRenderPass
         public string kernelName;
         public List<(string, BufferHandle, AccessFlags)> bufferList;
         public List<(string, TextureHandle, AccessFlags)> textureList;
-        // need to add access flags
         public Vector3Int threadGroups;
     }
 
@@ -77,44 +67,89 @@ public class AberrationRenderPass : ScriptableRenderPass
         // from the back buffer.
         if (resourceData.isActiveTargetBackBuffer)
             return;
-
-        // Set the blur texture size to be the same as the camera target size.
-        blurTextureDescriptor.width = cameraData.cameraTargetDescriptor.width;
-        blurTextureDescriptor.height = cameraData.cameraTargetDescriptor.height;
-        blurTextureDescriptor.depthBufferBits = 0;
         
         TextureHandle srcCamColor = resourceData.activeColorTexture;
         TextureHandle srcCamDepth = resourceData.activeDepthTexture;
-        TextureHandle dst = UniversalRenderer.CreateRenderGraphTexture(renderGraph,
-            blurTextureDescriptor, k_BlurTextureName, false);
+
+        var dstDesc = renderGraph.GetTextureDesc(srcCamColor);
+        dstDesc.name = "CameraColor-Aberration";
+        dstDesc.clearBuffer = false;
+        dstDesc.enableRandomWrite = true;
+        TextureHandle dst = renderGraph.CreateTexture(dstDesc);
 
         // Update the blur settings in the material
         UpdateAberrationSettings();
 
+        // change these so it only calls setdata and setconstantbuffer when parameters change
+        uint[] arr = { (uint)cameraData.cameraTargetDescriptor.width, (uint)cameraData.cameraTargetDescriptor.height };
+        paramsBuffer.SetData(arr);
+        cs.SetConstantBuffer("TileSplatParams", paramsBuffer, 0, TileSplatParamsSize);
+
         // This check is to avoid an error from the material preview in the scene
         if (!srcCamColor.IsValid() || !dst.IsValid())
             return;
-        
-        // The AddBlitPass method adds a vertical blur render graph pass that blits from the source texture (camera color in this case) to the destination texture using the first shader pass (the shader pass is defined in the last parameter).
-        // RenderGraphUtils.BlitMaterialParameters paraVertical = new(srcCamColor, dst, material, 0);
-        // renderGraph.AddBlitPass(paraVertical, k_VerticalPassName);
-        
-        // // The AddBlitPass method adds a horizontal blur render graph pass that blits from the texture written by the vertical blur pass to the camera color texture. The method uses the second shader pass.
-        // RenderGraphUtils.BlitMaterialParameters paraHorizontal = new(dst, srcCamColor, material, 1);
-        // renderGraph.AddBlitPass(paraHorizontal, k_HorizontalPassName);
-
-
-
 
         BufferHandle tileSplatHandle = renderGraph.ImportBuffer(tileSplatBuffer);
+        
 
-        using (var builder = renderGraph.AddComputePass("TileBufferBuild", out PassData passData))
+        // using (var builder = renderGraph.AddComputePass("TileBufferBuild", out PassData passData))
+        // {
+        //     passData.cs = cs;
+        //     passData.kernelName = "TileBufferBuild";
+        //     passData.bufferList = new() 
+        //     { 
+        //         ("_oTileSplatData", tileSplatHandle, AccessFlags.ReadWrite) 
+        //     };
+        //     passData.textureList = new() 
+        //     { 
+        //         ("_iColor", srcCamColor, AccessFlags.Read), 
+        //         ("_iDepth", srcCamDepth, AccessFlags.Read) 
+        //     };
+        //     passData.threadGroups = new(1, 1, 1);
+
+        //     foreach (var (_, bufferHandle, accessFlag) in passData.bufferList)
+        //         builder.UseBuffer(bufferHandle, accessFlag);
+        //     // not sure what the difference between UseTexture and UseGlobalTexture is
+        //     foreach (var (_, textureHandle, accessFlag) in passData.textureList)
+        //         builder.UseTexture(textureHandle, accessFlag);
+        //     builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
+        // }
+
+        // using (var builder = renderGraph.AddComputePass("TileBufferSplat", out PassData passData))
+        // {
+        //     passData.cs = cs;
+        //     passData.kernelName = "TileBufferSplat";
+        //     passData.bufferList = new() 
+        //     { 
+        //         ("_oTileSplatData", tileSplatHandle, AccessFlags.ReadWrite) 
+        //     };
+        //     passData.textureList = new() 
+        //     { 
+        //         ("_iColor", srcCamColor, AccessFlags.Read), 
+        //         ("_iDepth", srcCamDepth, AccessFlags.Read) 
+        //     };
+        //     passData.threadGroups = new(1, 1, 1);
+
+        //     foreach (var (_, bufferHandle, accessFlag) in passData.bufferList)
+        //         builder.UseBuffer(bufferHandle, accessFlag);
+        //     // not sure what the difference between UseTexture and UseGlobalTexture is
+        //     foreach (var (_, textureHandle, accessFlag) in passData.textureList)
+        //         builder.UseTexture(textureHandle, accessFlag);
+        //     builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
+        // }
+
+        using (var builder = renderGraph.AddComputePass("BlurTest", out PassData passData))
         {
             passData.cs = cs;
-            passData.kernelName = "TileBufferBuild";
-            passData.bufferList = new() { ("_oTileSplatData", tileSplatHandle, AccessFlags.ReadWrite) };
-            passData.textureList = new() { ("_iColor", srcCamColor, AccessFlags.Read), ("_iDepth", srcCamDepth, AccessFlags.Read) };
-            passData.threadGroups = new(1, 1, 1);
+            passData.kernelName = "BlurTest";
+            passData.bufferList = new();
+            passData.textureList = new() 
+            {
+                ("_iColor", srcCamColor, AccessFlags.Read),
+                ("_oColor", dst, AccessFlags.Write),
+                ("_iDepth", srcCamDepth, AccessFlags.Read)
+            };
+            passData.threadGroups = new(Mathf.CeilToInt(cameraData.cameraTargetDescriptor.width / 8), Mathf.CeilToInt(cameraData.cameraTargetDescriptor.height / 8), 1);
 
             foreach (var (_, bufferHandle, accessFlag) in passData.bufferList)
                 builder.UseBuffer(bufferHandle, accessFlag);
@@ -124,9 +159,7 @@ public class AberrationRenderPass : ScriptableRenderPass
             builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
         }
 
-
-
-
+        resourceData.cameraColor = dst;
     }
 
     static void ExecutePass(PassData data, ComputeGraphContext cgContext)
@@ -140,7 +173,7 @@ public class AberrationRenderPass : ScriptableRenderPass
     }
 }
 
-[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+[StructLayout(LayoutKind.Sequential)]
 struct SplatIndex
 {
     public uint uiTileId;

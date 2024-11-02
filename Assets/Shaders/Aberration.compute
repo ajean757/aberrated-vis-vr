@@ -1,6 +1,15 @@
 // Each #kernel tells which function to compile; you can have many kernels
 #pragma kernel CSMain
 #pragma kernel TileBufferBuild
+#pragma kernel TileBufferSplat
+#pragma kernel BlurTest
+
+#define TILE_SIZE 8
+
+cbuffer TileSplatParams {
+	uint screenWidth;
+	uint screenHeight;
+};
 
 struct SplatIndex
 {
@@ -15,28 +24,62 @@ struct SplatIndex
 StructuredBuffer<SplatIndex> _iTileSplatData;
 RWStructuredBuffer<SplatIndex> _oTileSplatData;
 
-// Unsure about these types
 Texture2D<float4> _iColor;
 RWTexture2D<float4> _oColor;
 
+// depth is stored in .x
 Texture2D<float4> _iDepth;
 
-// Create a StructuredBuffer/ComputeBuffer with read only flag.
-StructuredBuffer<int> inputData;
-// Create a StructuredBuffer/ComputeBuffer with read & write flag.
-RWStructuredBuffer<int> outputData;
-
-// We allocate 20 threads one for each number given to the shader.
-// CSMain is the entry point we use we have to define the entry points as kernel.
-[numthreads(20,1,1)]
-void CSMain (uint3 id : SV_DispatchThreadID)
+uint fragmentArrayIndex(uint2 fragmentCoord)
 {
-    // We use the thead id as index for the data.
-    outputData[id.x] = 2 * inputData[id.x];
+	return fragmentCoord.y * screenWidth + fragmentCoord.x;
 }
 
-[numthreads(20,1,1)] // fix this
+[numthreads(TILE_SIZE,TILE_SIZE,1)]
+void FragmentBufferBuild(uint3 id : SV_DispatchThreadID)
+{
+	const uint arrayIndex = fragmentArrayIndex(uint3(id));
+
+	const float3 color = _iColor[id.xy];
+	const float depth = _iDepth[id.xy];
+}
+
+[numthreads(8,8,1)] // fix this
 void TileBufferBuild(uint3 id : SV_DispatchThreadID)
 {
+	uint3 tileId = id / uint3(8, 8, 1);
+	uint3 threadId = id % uint3(8, 8, 1);
     // idk
+}
+
+[numthreads(32, 1, 1)] // fix this
+void TileBufferSplat(uint id : SV_DispatchThreadID)
+{
+	// idk
+}
+
+[numthreads(8,8,1)]
+void BlurTest(uint3 id : SV_DispatchThreadID)
+{
+	uint texWidth;
+	uint texHeight;
+	_iColor.GetDimensions(texWidth, texHeight);
+	if (id.x >= texWidth || id.y >= texHeight)
+		return;
+	float4 color = float4(0.0, 0.0, 0.0, 1.0);
+	uint cnt = 0;
+	for (int i = -10; i <= 10; i++)
+	{
+		for (int j = -10; j <= 10; j++)
+		{
+			if (id.x + i >= 0 && id.x + i < texWidth && id.y + j >= 0 && id.y + j < texHeight) 
+			{
+				color += _iColor[id.xy + uint2(i, j)];
+				cnt++;
+			}
+		}
+	}
+	color /= cnt;
+	//color.x = _iDepth[id.xy].x;
+	_oColor[id.xy] = color;
 }
