@@ -8,22 +8,54 @@ using System.Runtime.InteropServices;
 
 public class AberrationRenderPass : ScriptableRenderPass
 {
-    private static readonly int TileSplatParamsSize = 2 * sizeof(uint);
+    // Defined consts in compute shader
+    private const int TILE_SIZE = 16;
+    private const int TILE_MAX_FRAGMENTS = 8192;
+
+    // Struct sizes in compute shader
+    //private const int TileSplatParamsSize = 2 * 16;
+    private const int FragmentDataSize = 7 * sizeof(float);
+    private const int TileFragmentCountSize = sizeof(uint);
+    private const int SortIndexSize = sizeof(uint) + sizeof(float);
+
+    // Params
+    static readonly int NumTiles = Shader.PropertyToID("numTiles");
+    static readonly int Resolution = Shader.PropertyToID("resolution");
+    static readonly int MaxBlurRadiusCurrent = Shader.PropertyToID("maxBlurRadiusCurrent");
+
+    // Buffers
+    static readonly int FragmentBuffer = Shader.PropertyToID("fragmentBuffer");
+    private GraphicsBuffer fragmentBuffer = null;
+
+    static readonly int TileFragmentCountBuffer = Shader.PropertyToID("tileFragmentCountBuffer");
+    private GraphicsBuffer tileFragmentCountBuffer = null;
+
+    static readonly int TileSortBuffer = Shader.PropertyToID("tileSortBuffer");
+    private GraphicsBuffer tileSortBuffer = null;
+
+    // Textures
+    static readonly int IColor = Shader.PropertyToID("iColor");
+    static readonly int OColor = Shader.PropertyToID("oColor");
+    static readonly int IDepth = Shader.PropertyToID("iDepth");
+
+    private Vector2Int numTiles = Vector2Int.zero;
+    private Vector2Int resolution = Vector2Int.zero;
 
     private ComputeShader cs;
 
     private AberrationSettings defaultSettings;
 
-    private GraphicsBuffer tileSplatBuffer;
-    private GraphicsBuffer paramsBuffer;
+    //private GraphicsBuffer paramsBuffer;
+
 
     public AberrationRenderPass(AberrationSettings defaultSettings, ComputeShader cs)
     {
         this.defaultSettings = defaultSettings;
         this.cs = cs;
-
-        tileSplatBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 100, Marshal.SizeOf(typeof(SplatIndex)));
-        paramsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Constant, 1, TileSplatParamsSize);
+        
+        //fragmentBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, , FragmentDataSize);
+        //fragmentBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 100, Marshal.SizeOf(typeof(SplatIndex)));
+        //paramsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Constant, 1, TileSplatParamsSize);
     }
 
     private void UpdateAberrationSettings()
@@ -51,9 +83,18 @@ public class AberrationRenderPass : ScriptableRenderPass
         public ComputeShader cs;
         // Buffer handles for the compute buffers.
         public string kernelName;
-        public List<(string, BufferHandle, AccessFlags)> bufferList;
-        public List<(string, TextureHandle, AccessFlags)> textureList;
+        public List<(int id, BufferHandle bufferhandle, AccessFlags accessFlags)> bufferList;
+        public List<(int id, TextureHandle textureHandle, AccessFlags accessFlags)> textureList;
         public Vector3Int threadGroups;
+
+        public void Build(IComputeRenderGraphBuilder builder)
+        {
+            foreach (var (_, bufferHandle, accessFlag) in bufferList)
+                builder.UseBuffer(bufferHandle, accessFlag);
+            // not sure what the difference between UseTexture and UseGlobalTexture is
+            foreach (var (_, textureHandle, accessFlag) in textureList)
+                builder.UseTexture(textureHandle, accessFlag);
+        }
     }
 
     public override void RecordRenderGraph(RenderGraph renderGraph,
@@ -81,16 +122,41 @@ public class AberrationRenderPass : ScriptableRenderPass
         UpdateAberrationSettings();
 
         // change these so it only calls setdata and setconstantbuffer when parameters change
-        uint[] arr = { (uint)cameraData.cameraTargetDescriptor.width, (uint)cameraData.cameraTargetDescriptor.height };
-        paramsBuffer.SetData(arr);
-        cs.SetConstantBuffer("TileSplatParams", paramsBuffer, 0, TileSplatParamsSize);
+        // (x - 1) / y + 1 is ceil(x / y) for ints
+        // Vector2Int numTiles = new((cameraData.cameraTargetDescriptor.width - 1) / TILE_SIZE + 1, (cameraData.cameraTargetDescriptor.height - 1) / TILE_SIZE + 1);
+        // uint[] arr = { (uint)numTiles.x, (uint)numTiles.y, (uint)cameraData.cameraTargetDescriptor.width, (uint)cameraData.cameraTargetDescriptor.height };
+        // paramsBuffer.SetData(arr);
+        // cs.SetConstantBuffer("TileSplatParams", paramsBuffer, 0, TileSplatParamsSize);
+        //cs.SetVector("")
+        
+        // Update cbuffer values
+        if (resolution != new Vector2Int(cameraData.cameraTargetDescriptor.width, cameraData.cameraTargetDescriptor.height))
+        {
+            if (fragmentBuffer != null)
+                fragmentBuffer.Release();
+            if (tileFragmentCountBuffer != null)
+                tileFragmentCountBuffer.Release();
+            if (tileSortBuffer != null)
+                tileSortBuffer.Release();
+
+            resolution = new Vector2Int(cameraData.cameraTargetDescriptor.width, cameraData.cameraTargetDescriptor.height);
+            numTiles = new Vector2Int((resolution.x - 1) / TILE_SIZE + 1, (resolution.y - 1) / TILE_SIZE + 1);
+            cs.SetInts(Resolution, new[] { resolution.x, resolution.y });
+            cs.SetInts(NumTiles, new[] { numTiles.x, numTiles.y });
+
+            fragmentBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, resolution.x * resolution.y, FragmentDataSize);
+            tileFragmentCountBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numTiles.x * numTiles.y, TileFragmentCountSize);
+            tileSortBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numTiles.x * numTiles.y * TILE_MAX_FRAGMENTS, SortIndexSize);
+        }
 
         // This check is to avoid an error from the material preview in the scene
-        if (!srcCamColor.IsValid() || !dst.IsValid())
+        if (resolution.x == 0 || !srcCamColor.IsValid() || !dst.IsValid())
             return;
 
-        BufferHandle tileSplatHandle = renderGraph.ImportBuffer(tileSplatBuffer);
-        
+        BufferHandle fragmentHandle = renderGraph.ImportBuffer(fragmentBuffer);
+        BufferHandle tileFragmentCountHandle = renderGraph.ImportBuffer(tileFragmentCountBuffer);
+        BufferHandle tileSortHandle = renderGraph.ImportBuffer(tileSortBuffer);
+        //BufferHandle tileSplatHandle = renderGraph.ImportBuffer(tileSplatBuffer);
 
         // using (var builder = renderGraph.AddComputePass("TileBufferBuild", out PassData passData))
         // {
@@ -138,6 +204,44 @@ public class AberrationRenderPass : ScriptableRenderPass
         //     builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
         // }
 
+        using (var builder = renderGraph.AddComputePass("TileBufferBuild", out PassData passData))
+        {
+            passData.cs = cs;
+            passData.kernelName = "TileBufferBuild";
+            passData.bufferList = new()
+            {
+                (FragmentBuffer, fragmentHandle, AccessFlags.Write),
+                (TileFragmentCountBuffer, tileFragmentCountHandle, AccessFlags.Write),
+                (TileSortBuffer, tileSortHandle, AccessFlags.Write),
+            };
+            passData.textureList = new() 
+            {
+                (IColor, srcCamColor, AccessFlags.Read),
+                (IDepth, srcCamDepth, AccessFlags.Read),
+            };
+            passData.threadGroups = new Vector3Int(numTiles.x, numTiles.y, 1);
+
+            passData.Build(builder);
+            builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
+        }
+
+        using (var builder = renderGraph.AddComputePass("TileBufferSplat", out PassData passData))
+        {
+            passData.cs = cs;
+            passData.kernelName = "TileBufferSplat";
+            passData.bufferList = new()
+            {
+                (FragmentBuffer, fragmentHandle, AccessFlags.Read),
+                (TileFragmentCountBuffer, tileFragmentCountHandle, AccessFlags.ReadWrite),
+                (TileSortBuffer, tileSortHandle, AccessFlags.Write),
+            };
+            passData.textureList = new();
+            passData.threadGroups = new Vector3Int(numTiles.x, numTiles.y, 1);
+
+            passData.Build(builder);
+            builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
+        }
+
         using (var builder = renderGraph.AddComputePass("BlurTest", out PassData passData))
         {
             passData.cs = cs;
@@ -145,17 +249,13 @@ public class AberrationRenderPass : ScriptableRenderPass
             passData.bufferList = new();
             passData.textureList = new() 
             {
-                ("_iColor", srcCamColor, AccessFlags.Read),
-                ("_oColor", dst, AccessFlags.Write),
-                ("_iDepth", srcCamDepth, AccessFlags.Read)
+                (IColor, srcCamColor, AccessFlags.Read),
+                (OColor, dst, AccessFlags.Write),
+                (IDepth, srcCamDepth, AccessFlags.Read),
             };
             passData.threadGroups = new(Mathf.CeilToInt(cameraData.cameraTargetDescriptor.width / 8), Mathf.CeilToInt(cameraData.cameraTargetDescriptor.height / 8), 1);
 
-            foreach (var (_, bufferHandle, accessFlag) in passData.bufferList)
-                builder.UseBuffer(bufferHandle, accessFlag);
-            // not sure what the difference between UseTexture and UseGlobalTexture is
-            foreach (var (_, textureHandle, accessFlag) in passData.textureList)
-                builder.UseTexture(textureHandle, accessFlag);
+            passData.Build(builder);
             builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
         }
 
@@ -165,20 +265,18 @@ public class AberrationRenderPass : ScriptableRenderPass
     static void ExecutePass(PassData data, ComputeGraphContext cgContext)
     {
         int kernelIndex = data.cs.FindKernel(data.kernelName);
-        foreach (var (name, bufferHandle, _) in data.bufferList)
-            cgContext.cmd.SetComputeBufferParam(data.cs, kernelIndex, name, bufferHandle);
-        foreach (var (name, textureHandle, _) in data.textureList)
-            cgContext.cmd.SetComputeTextureParam(data.cs, kernelIndex, name, textureHandle);
+        foreach (var (id, bufferHandle, _) in data.bufferList)
+            cgContext.cmd.SetComputeBufferParam(data.cs, kernelIndex, id, bufferHandle);
+        foreach (var (id, textureHandle, _) in data.textureList)
+            cgContext.cmd.SetComputeTextureParam(data.cs, kernelIndex, id, textureHandle);
         cgContext.cmd.DispatchCompute(data.cs, kernelIndex, data.threadGroups.x, data.threadGroups.y, data.threadGroups.z);
     }
-}
 
-[StructLayout(LayoutKind.Sequential)]
-struct SplatIndex
-{
-    public uint uiTileId;
-    public uint uiFragmentIndex;
-    public float fFragmentDepth;
-    public float fBlurRadius;
-    public Vector2 vScreenPosition;
+    // No idea if this actually gets called
+    public void Dispose()
+    {
+        fragmentBuffer.Release();
+        tileFragmentCountBuffer.Release();
+        tileSortBuffer.Release();
+    }
 }
