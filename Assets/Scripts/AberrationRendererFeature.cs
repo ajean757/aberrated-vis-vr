@@ -23,14 +23,13 @@ public class AberrationRendererFeature : ScriptableRendererFeature
 
     public override void Create()
     {
-    // if (shader == null)
-    // {
-    //     return;
-    // }
-    // material = new Material(shader);
-    //aberrationRenderPass = new AberrationRenderPass(material, settings, computeShader);
-    settings.PSFSet = PSFSet;
-
+        // if (shader == null)
+        // {
+        //     return;
+        // }
+        // material = new Material(shader);
+        //aberrationRenderPass = new AberrationRenderPass(material, settings, computeShader);
+        settings.PSFSet = PSFSet;
         aberrationRenderPass = new AberrationRenderPass(settings, computeShader);
         aberrationRenderPass.renderPassEvent = RenderPassEvent.BeforeRenderingPostProcessing;
     }
@@ -64,5 +63,5 @@ public class AberrationRendererFeature : ScriptableRendererFeature
 [Serializable]
 public class AberrationSettings
 {
-  public string PSFSet;
+    public string PSFSet;
 }
