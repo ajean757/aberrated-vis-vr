@@ -72,3 +72,14 @@ crashlytics-build.properties
 /[Aa]ssets/[Ss]treamingAssets/aa/*
 
 .vscode/
+
+# No Sponza (too big)
+Assets/ClassicSponza
+Assets/ClassicSponza.meta
+Assets/Scenes/Sponza.unity
+Assets/Scenes/Sponza.unity.meta
+Assets/sponza.unitypackage.meta
+
+
+# No sample code (too big)
+Assets/Samples

@@ -1,5 +1,6 @@
 // Each #kernel tells which function to compile; you can have many kernels
 //#pragma kernel FragmentBufferBuild
+#pragma kernel SortFragments
 #pragma kernel TileBufferBuild
 #pragma kernel TileBufferSplat
 #pragma kernel BlurTest
@@ -220,4 +221,118 @@ void BlurTest(uint3 id : SV_DispatchThreadID)
 	color /= cnt;
 	//color.x = _iDepth[id.xy].x;
 	oColor[id.xy] = color;
+}
+
+
+#define MAX_FRAGMENTS_PER_TILE 1024
+
+RWStructuredBuffer<uint> indices;
+RWStructuredBuffer<float> depths;
+
+groupshared uint fragmentIndices[MAX_FRAGMENTS_PER_TILE];
+groupshared float fragmentDepths[MAX_FRAGMENTS_PER_TILE];
+
+[numthreads(MAX_FRAGMENTS_PER_TILE,1,1)]
+void SortFragments(uint3 id_in_tile : SV_DispatchThreadID) {
+	uint id = id_in_tile.x;
+	fragmentIndices[id] = indices[id];
+	fragmentDepths[id] = depths[id];
+	GroupMemoryBarrierWithGroupSync();
+
+	for (int k = 2; k <= MAX_FRAGMENTS_PER_TILE; k *= 2) {
+		for (int j = k / 2; j > 0; j /= 2) {
+			uint i = id;
+			uint l = i ^ j;
+			if (l > i) {
+				if (((i & k) == 0 && fragmentDepths[i] > fragmentDepths[l]) || ((i & k) != 0 && fragmentDepths[i] < fragmentDepths[l])) {
+					float ftmp = fragmentDepths[i];
+					fragmentDepths[i] = fragmentDepths[l];
+					fragmentDepths[l] = ftmp;
+
+					uint itmp = fragmentIndices[i];
+					fragmentIndices[i] = fragmentIndices[l];
+					fragmentIndices[l] = itmp;
+				}
+			}
+
+			// roughly equivalent to __syncthreads(), explicitly fences over shared memory only
+			GroupMemoryBarrierWithGroupSync();
+		}
+	}
+
+	indices[id] = fragmentIndices[id];
+	depths[id] = fragmentDepths[id];
+}
+
+struct PsfParam {
+	uint minBlurRadius; // px
+	uint maxBlurRadius; // px
+	uint numPsfWeights;
+	float blurRadiusDeg;
+};
+
+StructuredBuffer<float> psfWeights;
+StructuredBuffer<PsfParam> psfParams;
+
+
+struct CoordinatesIndices {
+	uint2 fragmentCoord;
+	uint2 tileId;
+	uint2 threadId;
+	uint threadIndex;
+	uint arrayIndex;
+	uint countArrayIndex;
+	uint numTileFragments;
+	uint groupSize;
+	uint batchSize;
+};
+
+
+
+// Perform convolution
+uint unpackBatchFragments(const int batchId) {
+
+}
+
+float3 samplePsf(uint2 fragmentCoord, FragmentData) {
+
+}
+
+
+void convolve() {
+
+}
+
+void convolveFragment() {
+
+}
+
+[numthreads(32, 32, 1)] // fix this
+void Convolution(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 localThreadID : SV_GroupThreadID)
+{
+	// define coordinates by calling DEFINE_COORDINATES_INDICES
+	CoordinatesIndices coords = GetCoordinatesIndices(SV_DispatchThreadID, SV_GroupThreadID);
+
+	// extract number of fragments to process via sTileParametersBuffer
+	uint uiNumFragments = sTileParametersBuffer[coords.countArrayIndex].uiNumFragmentsTotal; //todo 
+
+	// Number of batches to make
+	uint numBatches = (uiNumFragments + coords.batchSize - 1) / coords.batchSize;
+
+	// Init the PSF data
+			// csoba is currently empty
+
+	// for each batch
+			// unpack batch fragments to shared mem
+			// perform convolution
+	for (int batchId = 0; batchId < numBatches; ++batchId) {
+
+	}
+
+	// ignore out of bound pixels
+
+	// normalize
+
+	// write out convolution result
+
 }

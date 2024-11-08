@@ -82,7 +82,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 6c204f1072c88724ca19196527d801b1, type: 3}
   m_Name: BlurRendererFeature
   m_EditorClassIdentifier: 
-  m_Active: 1
+  m_Active: 0
   settings:
     horizontalBlur: 0
     verticalBlur: 0
