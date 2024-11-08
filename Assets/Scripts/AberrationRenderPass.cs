@@ -5,6 +5,7 @@ using UnityEngine.Rendering.RenderGraphModule.Util;
 using UnityEngine.Rendering.Universal;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Linq;
 
 public class AberrationRenderPass : ScriptableRenderPass
 {
@@ -17,14 +18,23 @@ public class AberrationRenderPass : ScriptableRenderPass
     private GraphicsBuffer tileSplatBuffer;
     private GraphicsBuffer paramsBuffer;
 
-    public AberrationRenderPass(AberrationSettings defaultSettings, ComputeShader cs)
+
+    private GraphicsBuffer indicesBuffer;
+    private GraphicsBuffer depthsBuffer;
+
+  public AberrationRenderPass(AberrationSettings defaultSettings, ComputeShader cs)
     {
         this.defaultSettings = defaultSettings;
         this.cs = cs;
 
         tileSplatBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 100, Marshal.SizeOf(typeof(SplatIndex)));
         paramsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Constant, 1, TileSplatParamsSize);
-    }
+        // use dynamic for now since we want to write to it a lot. see: https://docs.unity3d.com/ScriptReference/ComputeBufferMode.html
+        indicesBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1024, sizeof(uint));
+        indicesBuffer.name = "Indices";
+        depthsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1024, sizeof(float));
+        depthsBuffer.name = "Depths";
+  }
 
     private void UpdateAberrationSettings()
     {
@@ -59,6 +69,27 @@ public class AberrationRenderPass : ScriptableRenderPass
     public override void RecordRenderGraph(RenderGraph renderGraph,
     ContextContainer frameData)
     {
+        /*
+        uint[] rangeArray = new uint[1024];
+        float[] depthsArray = new float[1024];
+        indicesBuffer.GetData(rangeArray);
+        depthsBuffer.GetData(depthsArray);
+
+        string rangeStr = "index after running SortFragments: ";
+        foreach (var item in rangeArray)
+        {
+          rangeStr += item.ToString() + " ";
+        }
+
+        string depthsStr = "depths after running SortFragments: ";
+        foreach (var item in depthsArray)
+        {
+          depthsStr += item.ToString() + " ";
+        }
+        Debug.Log(rangeStr);
+        Debug.Log(depthsStr);
+        Debug.Log("SortFragments End");
+        */
         UniversalResourceData resourceData = frameData.Get<UniversalResourceData>();
 
         UniversalCameraData cameraData = frameData.Get<UniversalCameraData>();
@@ -89,54 +120,53 @@ public class AberrationRenderPass : ScriptableRenderPass
         if (!srcCamColor.IsValid() || !dst.IsValid())
             return;
 
-        BufferHandle tileSplatHandle = renderGraph.ImportBuffer(tileSplatBuffer);
         
 
-        // using (var builder = renderGraph.AddComputePass("TileBufferBuild", out PassData passData))
-        // {
-        //     passData.cs = cs;
-        //     passData.kernelName = "TileBufferBuild";
-        //     passData.bufferList = new() 
-        //     { 
-        //         ("_oTileSplatData", tileSplatHandle, AccessFlags.ReadWrite) 
-        //     };
-        //     passData.textureList = new() 
-        //     { 
-        //         ("_iColor", srcCamColor, AccessFlags.Read), 
-        //         ("_iDepth", srcCamDepth, AccessFlags.Read) 
-        //     };
-        //     passData.threadGroups = new(1, 1, 1);
+    // using (var builder = renderGraph.AddComputePass("TileBufferBuild", out PassData passData))
+    // {
+    //     passData.cs = cs;
+    //     passData.kernelName = "TileBufferBuild";
+    //     passData.bufferList = new() 
+    //     { 
+    //         ("_oTileSplatData", tileSplatHandle, AccessFlags.ReadWrite) 
+    //     };
+    //     passData.textureList = new() 
+    //     { 
+    //         ("_iColor", srcCamColor, AccessFlags.Read), 
+    //         ("_iDepth", srcCamDepth, AccessFlags.Read) 
+    //     };
+    //     passData.threadGroups = new(1, 1, 1);
 
-        //     foreach (var (_, bufferHandle, accessFlag) in passData.bufferList)
-        //         builder.UseBuffer(bufferHandle, accessFlag);
-        //     // not sure what the difference between UseTexture and UseGlobalTexture is
-        //     foreach (var (_, textureHandle, accessFlag) in passData.textureList)
-        //         builder.UseTexture(textureHandle, accessFlag);
-        //     builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
-        // }
+    //     foreach (var (_, bufferHandle, accessFlag) in passData.bufferList)
+    //         builder.UseBuffer(bufferHandle, accessFlag);
+    //     // not sure what the difference between UseTexture and UseGlobalTexture is
+    //     foreach (var (_, textureHandle, accessFlag) in passData.textureList)
+    //         builder.UseTexture(textureHandle, accessFlag);
+    //     builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
+    // }
 
-        // using (var builder = renderGraph.AddComputePass("TileBufferSplat", out PassData passData))
-        // {
-        //     passData.cs = cs;
-        //     passData.kernelName = "TileBufferSplat";
-        //     passData.bufferList = new() 
-        //     { 
-        //         ("_oTileSplatData", tileSplatHandle, AccessFlags.ReadWrite) 
-        //     };
-        //     passData.textureList = new() 
-        //     { 
-        //         ("_iColor", srcCamColor, AccessFlags.Read), 
-        //         ("_iDepth", srcCamDepth, AccessFlags.Read) 
-        //     };
-        //     passData.threadGroups = new(1, 1, 1);
+    // using (var builder = renderGraph.AddComputePass("TileBufferSplat", out PassData passData))
+    // {
+    //     passData.cs = cs;
+    //     passData.kernelName = "TileBufferSplat";
+    //     passData.bufferList = new() 
+    //     { 
+    //         ("_oTileSplatData", tileSplatHandle, AccessFlags.ReadWrite) 
+    //     };
+    //     passData.textureList = new() 
+    //     { 
+    //         ("_iColor", srcCamColor, AccessFlags.Read), 
+    //         ("_iDepth", srcCamDepth, AccessFlags.Read) 
+    //     };
+    //     passData.threadGroups = new(1, 1, 1);
 
-        //     foreach (var (_, bufferHandle, accessFlag) in passData.bufferList)
-        //         builder.UseBuffer(bufferHandle, accessFlag);
-        //     // not sure what the difference between UseTexture and UseGlobalTexture is
-        //     foreach (var (_, textureHandle, accessFlag) in passData.textureList)
-        //         builder.UseTexture(textureHandle, accessFlag);
-        //     builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
-        // }
+    //     foreach (var (_, bufferHandle, accessFlag) in passData.bufferList)
+    //         builder.UseBuffer(bufferHandle, accessFlag);
+    //     // not sure what the difference between UseTexture and UseGlobalTexture is
+    //     foreach (var (_, textureHandle, accessFlag) in passData.textureList)
+    //         builder.UseTexture(textureHandle, accessFlag);
+    //     builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
+    // }
 
         using (var builder = renderGraph.AddComputePass("BlurTest", out PassData passData))
         {
@@ -159,7 +189,61 @@ public class AberrationRenderPass : ScriptableRenderPass
             builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
         }
 
-        resourceData.cameraColor = dst;
+    /*
+    using (var builder = renderGraph.AddComputePass("SortFragments", out PassData passData))
+    {
+
+      BufferHandle indicesBufferHandle = renderGraph.ImportBuffer(indicesBuffer);
+      BufferHandle depthsBufferHandle = renderGraph.ImportBuffer(depthsBuffer);
+
+      passData.cs = cs;
+      passData.kernelName = "SortFragments";
+      passData.bufferList = new()
+      {
+        ("indices", indicesBufferHandle, AccessFlags.ReadWrite),
+        ("depths", depthsBufferHandle, AccessFlags.ReadWrite)
+      };
+      passData.textureList = new();
+      passData.threadGroups = new(1, 1, 1);
+
+      foreach (var (_, bufferHandle, accessFlag) in passData.bufferList)
+        builder.UseBuffer(bufferHandle, accessFlag);
+      // not sure what the difference between UseTexture and UseGlobalTexture is
+      foreach (var (_, textureHandle, accessFlag) in passData.textureList)
+        builder.UseTexture(textureHandle, accessFlag);
+        builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => {
+        List<int> range = Enumerable.Range(0, 1024).ToList();
+        List<float> randomDepths = Enumerable.Range(0, 1024).Select(_ => Random.Range(0.0f, 1.0f)).ToList();
+
+        Debug.Log("SortFragments Start");
+
+        string rangeStr;
+        string depthsStr;
+
+        rangeStr = "index before running compute shader: ";
+        foreach (var item in range)
+        {
+          rangeStr += item.ToString() + " ";
+        }
+
+        depthsStr = "depths before running compute shader: ";
+        foreach (var item in randomDepths)
+        {
+          depthsStr += item.ToString() + " ";
+        }
+        Debug.Log(rangeStr);
+        Debug.Log(depthsStr);
+        
+    indicesBuffer.SetData(range);
+            depthsBuffer.SetData(randomDepths);
+
+            ExecutePass(data, cgContext);
+            
+          });
+        }
+    */
+
+    resourceData.cameraColor = dst;
     }
 
     static void ExecutePass(PassData data, ComputeGraphContext cgContext)

@@ -1,5 +1,5 @@
 // Each #kernel tells which function to compile; you can have many kernels
-#pragma kernel CSMain
+#pragma kernel SortFragments
 #pragma kernel TileBufferBuild
 #pragma kernel TileBufferSplat
 #pragma kernel BlurTest
@@ -83,3 +83,46 @@ void BlurTest(uint3 id : SV_DispatchThreadID)
 	//color.x = _iDepth[id.xy].x;
 	_oColor[id.xy] = color;
 }
+
+
+#define MAX_FRAGMENTS_PER_TILE 1024
+
+RWStructuredBuffer<uint> indices;
+RWStructuredBuffer<float> depths;
+
+groupshared uint fragmentIndices[MAX_FRAGMENTS_PER_TILE];
+groupshared float fragmentDepths[MAX_FRAGMENTS_PER_TILE];
+
+[numthreads(MAX_FRAGMENTS_PER_TILE,1,1)]
+void SortFragments(uint3 id_in_tile : SV_DispatchThreadID) {
+	uint id = id_in_tile.x;
+	fragmentIndices[id] = indices[id];
+	fragmentDepths[id] = depths[id];
+	GroupMemoryBarrierWithGroupSync();
+
+	for (int k = 2; k <= MAX_FRAGMENTS_PER_TILE; k *= 2) {
+		for (int j = k / 2; j > 0; j /= 2) {
+			uint i = id;
+			uint l = i ^ j;
+			if (l > i) {
+				if (((i & k) == 0 && fragmentDepths[i] > fragmentDepths[l]) || ((i & k) != 0 && fragmentDepths[i] < fragmentDepths[l])) {
+					float ftmp = fragmentDepths[i];
+					fragmentDepths[i] = fragmentDepths[l];
+					fragmentDepths[l] = ftmp;
+
+					uint itmp = fragmentIndices[i];
+					fragmentIndices[i] = fragmentIndices[l];
+					fragmentIndices[l] = itmp;
+				}
+			}
+
+			// roughly equivalent to __syncthreads(), explicitly fences over shared memory only
+			GroupMemoryBarrierWithGroupSync();
+		}
+	}
+
+	indices[id] = fragmentIndices[id];
+	depths[id] = fragmentDepths[id];
+}
+
+StructuredBuffer<float> psfWeights;
