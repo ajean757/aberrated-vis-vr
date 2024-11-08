@@ -125,4 +125,75 @@ void SortFragments(uint3 id_in_tile : SV_DispatchThreadID) {
 	depths[id] = fragmentDepths[id];
 }
 
+struct PsfParam {
+	uint minBlurRadius; // px
+	uint maxBlurRadius; // px
+	uint numPsfWeights;
+	float blurRadiusDeg;
+};
+
 StructuredBuffer<float> psfWeights;
+StructuredBuffer<PsfParam> psfParams;
+
+
+struct CoordinatesIndices {
+	uint2 fragmentCoord;
+	uint2 tileId;
+	uint2 threadId;
+	uint threadIndex;
+	uint arrayIndex;
+	uint countArrayIndex;
+	uint numTileFragments;
+	uint groupSize;
+	uint batchSize;
+};
+
+
+
+// Perform convolution
+uint unpackBatchFragments(const int batchId) {
+
+}
+
+float3 samplePsf(uint2 fragmentCoord, FragmentData) {
+
+}
+
+
+void convolve() {
+
+}
+
+void convolveFragment() {
+
+}
+
+[numthreads(32, 32, 1)] // fix this
+void Convolution(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 localThreadID : SV_GroupThreadID)
+{
+	// define coordinates by calling DEFINE_COORDINATES_INDICES
+	CoordinatesIndices coords = GetCoordinatesIndices(SV_DispatchThreadID, SV_GroupThreadID);
+
+	// extract number of fragments to process via sTileParametersBuffer
+	uint uiNumFragments = sTileParametersBuffer[coords.countArrayIndex].uiNumFragmentsTotal; //todo 
+
+	// Number of batches to make
+	uint numBatches = (uiNumFragments + coords.batchSize - 1) / coords.batchSize;
+
+	// Init the PSF data
+			// csoba is currently empty
+
+	// for each batch
+			// unpack batch fragments to shared mem
+			// perform convolution
+	for (int batchId = 0; batchId < numBatches; ++batchId) {
+
+	}
+
+	// ignore out of bound pixels
+
+	// normalize
+
+	// write out convolution result
+
+}

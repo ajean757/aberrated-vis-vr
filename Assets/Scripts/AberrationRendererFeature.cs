@@ -3,9 +3,19 @@ using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering.Universal;
 
+[AttributeUsage(AttributeTargets.Field, AllowMultiple = false)]
+public class FolderDropdownAttribute : Attribute
+{
+  // You can add parameters to this attribute if needed, e.g., to specify folder paths or other options.
+}
+
 public class AberrationRendererFeature : ScriptableRendererFeature
 {
-    [SerializeField] private AberrationSettings settings;
+    private AberrationSettings settings;
+    
+    [FolderDropdown]
+    public string PSFSet;
+  
     //[SerializeField] private Shader shader;
     [SerializeField] private ComputeShader computeShader;
     //private Material material;
@@ -13,12 +23,14 @@ public class AberrationRendererFeature : ScriptableRendererFeature
 
     public override void Create()
     {
-        // if (shader == null)
-        // {
-        //     return;
-        // }
-        // material = new Material(shader);
-        //aberrationRenderPass = new AberrationRenderPass(material, settings, computeShader);
+    // if (shader == null)
+    // {
+    //     return;
+    // }
+    // material = new Material(shader);
+    //aberrationRenderPass = new AberrationRenderPass(material, settings, computeShader);
+    settings.PSFSet = PSFSet;
+
         aberrationRenderPass = new AberrationRenderPass(settings, computeShader);
         aberrationRenderPass.renderPassEvent = RenderPassEvent.BeforeRenderingPostProcessing;
     }
@@ -52,6 +64,5 @@ public class AberrationRendererFeature : ScriptableRendererFeature
 [Serializable]
 public class AberrationSettings
 {
-    [Tooltip("Size of a tile in pixels")]
-    public int tileSize;
+  public string PSFSet;
 }
