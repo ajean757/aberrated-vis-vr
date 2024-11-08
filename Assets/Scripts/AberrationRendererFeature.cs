@@ -31,7 +31,10 @@ public class AberrationRendererFeature : ScriptableRendererFeature
             renderer.EnqueuePass(aberrationRenderPass);
         }
     }
-
+    public AberrationRenderPass GetAberrationRenderPass()
+    {
+        return aberrationRenderPass;
+    }
     protected override void Dispose(bool disposing)
     {
         // #if UNITY_EDITOR

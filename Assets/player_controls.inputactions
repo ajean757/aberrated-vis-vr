@@ -1,0 +1,54 @@
+{
+    "name": "player_controls",
+    "maps": [
+        {
+            "name": "player",
+            "id": "1697bac5-947b-4fde-856f-047906eb136d",
+            "actions": [
+                {
+                    "name": "move",
+                    "type": "Value",
+                    "id": "ba377aa8-ed95-4057-9392-48be3eb3bab1",
+                    "expectedControlType": "Vector2",
+                    "processors": "",
+                    "interactions": "",
+                    "initialStateCheck": true
+                },
+                {
+                    "name": "turn",
+                    "type": "Value",
+                    "id": "fb1ab83d-45bb-4103-9175-2775a550a75d",
+                    "expectedControlType": "Vector2",
+                    "processors": "",
+                    "interactions": "",
+                    "initialStateCheck": true
+                }
+            ],
+            "bindings": [
+                {
+                    "name": "",
+                    "id": "0efe7e32-09bb-421b-b946-7e2953ed8cf2",
+                    "path": "<XRController>{LeftHand}/{Primary2DAxis}",
+                    "interactions": "",
+                    "processors": "",
+                    "groups": "",
+                    "action": "move",
+                    "isComposite": false,
+                    "isPartOfComposite": false
+                },
+                {
+                    "name": "",
+                    "id": "2392c326-6400-4c0f-bef2-90eb31282711",
+                    "path": "<XRController>{RightHand}/{Primary2DAxis}",
+                    "interactions": "",
+                    "processors": "",
+                    "groups": "",
+                    "action": "turn",
+                    "isComposite": false,
+                    "isPartOfComposite": false
+                }
+            ]
+        }
+    ],
+    "controlSchemes": []
+}

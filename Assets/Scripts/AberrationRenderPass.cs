@@ -16,7 +16,8 @@ public class AberrationRenderPass : ScriptableRenderPass
 
     private GraphicsBuffer tileSplatBuffer;
     private GraphicsBuffer paramsBuffer;
-
+    public bool enablePass = true;
+    
     public AberrationRenderPass(AberrationSettings defaultSettings, ComputeShader cs)
     {
         this.defaultSettings = defaultSettings;
@@ -58,7 +59,9 @@ public class AberrationRenderPass : ScriptableRenderPass
 
     public override void RecordRenderGraph(RenderGraph renderGraph,
     ContextContainer frameData)
-    {
+    {   
+        // if (!enablePass) // Check if blur is enabled
+        //     return;
         UniversalResourceData resourceData = frameData.Get<UniversalResourceData>();
 
         UniversalCameraData cameraData = frameData.Get<UniversalCameraData>();
