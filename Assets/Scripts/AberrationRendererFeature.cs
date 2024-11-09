@@ -29,7 +29,7 @@ public class AberrationRendererFeature : ScriptableRendererFeature
         // }
         // material = new Material(shader);
         //aberrationRenderPass = new AberrationRenderPass(material, settings, computeShader);
-        settings.PSFSet = PSFSet;
+        //settings.PSFSet = PSFSet;
         aberrationRenderPass = new AberrationRenderPass(settings, computeShader);
         aberrationRenderPass.renderPassEvent = RenderPassEvent.BeforeRenderingPostProcessing;
     }
@@ -45,6 +45,7 @@ public class AberrationRendererFeature : ScriptableRendererFeature
 
     protected override void Dispose(bool disposing)
     {
+        aberrationRenderPass.Dispose();
         // #if UNITY_EDITOR
         //     if (EditorApplication.isPlaying)
         //     {
