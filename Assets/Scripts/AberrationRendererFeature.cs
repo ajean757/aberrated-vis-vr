@@ -29,7 +29,7 @@ public class AberrationRendererFeature : ScriptableRendererFeature
         // }
         // material = new Material(shader);
         //aberrationRenderPass = new AberrationRenderPass(material, settings, computeShader);
-        //settings.PSFSet = PSFSet;
+        settings.PSFSet = PSFSet;
         aberrationRenderPass = new AberrationRenderPass(settings, computeShader);
         aberrationRenderPass.renderPassEvent = RenderPassEvent.BeforeRenderingPostProcessing;
     }
@@ -41,6 +41,11 @@ public class AberrationRendererFeature : ScriptableRendererFeature
         {
             renderer.EnqueuePass(aberrationRenderPass);
         }
+    }
+
+    public AberrationRenderPass GetRenderPass()
+    {
+        return aberrationRenderPass;
     }
 
     protected override void Dispose(bool disposing)

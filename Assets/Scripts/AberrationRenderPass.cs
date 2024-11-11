@@ -61,7 +61,7 @@ public class AberrationRenderPass : ScriptableRenderPass
     private GraphicsBuffer psfParamsBuffer;
     private GraphicsBuffer psfWeightsBuffer;
 
-    private PSFStack psfStack;
+    public PSFStack psfStack;
 
     public AberrationRenderPass(AberrationSettings defaultSettings, ComputeShader cs)
     {
@@ -89,7 +89,7 @@ public class AberrationRenderPass : ScriptableRenderPass
 
         // read in PSFs
         psfStack = new();
-        Debug.Log("PSF set name: " + defaultSettings.PSFSet);
+        psfStack.ReadPsfStack(defaultSettings.PSFSet);
     }
 
     private void UpdateAberrationSettings()
