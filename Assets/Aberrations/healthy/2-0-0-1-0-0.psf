@@ -4,6 +4,7 @@ Vertical Angle: 0
 Wavelength: 0.549 (um)
 Aperture Diameter: 5 (mm)
 Focus Distance: 8 (meters)
+Blur Radius: 0.254696 (degs)
 Radius: 2
 0.000666361  0.00272532  0.00720469  0.00289055 0.000696945
  0.00242312   0.0365878   0.0658934   0.0353543  0.00263291
