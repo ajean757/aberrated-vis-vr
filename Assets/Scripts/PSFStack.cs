@@ -69,14 +69,14 @@ public class PSFStack
     public PSF[,,,,,] stack;
 
     // Evaluated parameters
-    List<float> objectDistances;
-    List<float> objectDioptres;
-    List<float> incidentAnglesHorizontal;
-    List<float> incidentAnglesVertical;
-    List<float> lambdas;
-    List<float> apertureDiameters;
-    List<float> focusDioptres;
-    List<float> focusDistances;
+    public List<float> objectDistances;
+    public List<float> objectDioptres;
+    public List<float> incidentAnglesHorizontal;
+    public List<float> incidentAnglesVertical;
+    public List<float> lambdas;
+    public List<float> apertureDiameters;
+    public List<float> focusDioptres;
+    public List<float> focusDistances;
 
     public void ReadPsfStack(string psfSetName)
     {
@@ -143,14 +143,24 @@ public class PSFStack
         }
     }
 
-    PSF GetPSF(int[] indices)
+    public PSF GetPSF(int[] indices)
     {
         return stack[indices[0], indices[1], indices[2], indices[3], indices[4], indices[5]];
     }
 
+    public PSF GetPSF(PSFIndex index)
+		{
+        return stack[index.objectDepth, index.horizontal, index.vertical, index.lambda, index.aperture, index.focus];
+		}
+
     public int PSFCount()
 		{
         return stack.Length;
+		}
+
+    public int InterpolatedPSFCount()
+		{
+        return PSFCount() / (focusDioptres.Count * apertureDiameters.Count);
 		}
 
     public int TotalWeights()

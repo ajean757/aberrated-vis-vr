@@ -6,6 +6,7 @@ using UnityEngine.Rendering.Universal;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Linq;
+using System;
 
 
 /*
@@ -14,7 +15,7 @@ struct PsfParam
     uint minBlurRadius; // px
     uint maxBlurRadius; // px
     uint weightStartIndex;
-    float blurRadiusDeg;
+    float blurRadiusDeg; // this should be in degrees of image (!! not of retina. TODO: look into this)
 };
 */
 [StructLayout(LayoutKind.Sequential)]
@@ -31,6 +32,28 @@ struct PsfParam
         this.maxBlurRadius = maxBlurRadius;
         this.weightStartIndex = weightStartIndex;
         this.blurRadiusDeg = blurRadiusDeg;
+		}
+}
+
+/*
+struct InterpolatedPsfParam {
+		uint startLayer;
+		uint numLayers;
+		float blurRadius;
+};
+*/
+[StructLayout(LayoutKind.Sequential)]
+struct InterpolatedPsfParam
+{
+    public uint startLayer;
+    public uint numLayers;
+    public float blurRadius; // in screen-space pixels, possibly fractional
+
+    public InterpolatedPsfParam(uint startLayer, uint numLayers, float blurRadius)
+		{
+        this.startLayer = startLayer;
+        this.numLayers = numLayers;
+        this.blurRadius = blurRadius;
 		}
 }
 
@@ -88,6 +111,7 @@ public class AberrationRenderPass : ScriptableRenderPass
 
     private GraphicsBuffer psfParamsBuffer;
     private GraphicsBuffer psfWeightsBuffer;
+    private GraphicsBuffer interpolatedPsfParamsBuffer;
 
     public PSFStack psfStack;
 
@@ -127,7 +151,9 @@ public class AberrationRenderPass : ScriptableRenderPass
         psfWeightsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, psfStack.TotalWeights(), sizeof(float));
         psfWeightsBuffer.name = "PSF Weights Buffer";
 
-
+        int interpolatedPsfParamStructSize = Marshal.SizeOf<InterpolatedPsfParam>();
+        interpolatedPsfParamsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, psfStack.InterpolatedPSFCount(), interpolatedPsfParamStructSize);
+        interpolatedPsfParamsBuffer.name = "Interpolated PSF Parameters";
         
 
         // move data onto GPU at Pass Creation time
@@ -169,13 +195,127 @@ public class AberrationRenderPass : ScriptableRenderPass
             return psfWeights;
 				}
 
+        // precondition: values is sorted
+        Tuple<float, int, int> FindIndices(List<float> values, float interpolant)
+				{
+            int lower = 0;
+            int upper = 0;
+            if (interpolant <= values[0])
+						{
+                lower = 0;
+                upper = 0;
+						}
+            else if (interpolant >= values[values.Count - 1])
+						{
+                lower = values.Count - 1;
+                upper = values.Count - 1;
+						}
+            else
+						{
+                // linear search
+                for (int i = 0; i < values.Count - 1; i += 1)
+                {
+                    if (interpolant > values[i] && interpolant < values[i + 1])
+                    {
+                        lower = i;
+                        upper = i + 1;
+                        break;
+                    }
+                }
+            }
+
+            float frac = (lower != upper) ? (interpolant - values[lower]) / (values[upper] - values[lower]) : 0.0f;
+            return new(frac, lower, upper);
+				}
+
+        // Interpolate out the focus distance and aperture diameter dimensions. 
+        InterpolatedPsfParam[] CreateInterpolatedPsfParamBuffer(PSFStack stack, float focusDioptre, float apertureDiameter)
+				{
+            int interpolatedPsfParamCount = stack.PSFCount() / (stack.focusDioptres.Count * stack.apertureDiameters.Count);
+            InterpolatedPsfParam[] interpolatedPsfParams = new InterpolatedPsfParam[interpolatedPsfParamCount];
+            int i = 0;
+
+            stack.Iterate((idx, _) =>
+            {
+                if (idx.aperture == 0 && idx.focus == 0)
+								{
+                    (float fracFocus, int lowerFocus, int upperFocus) = FindIndices(stack.focusDioptres, focusDioptre);
+                    (float fracAperture, int lowerAperture, int upperAperture) = FindIndices(stack.apertureDiameters, apertureDiameter);
+                    
+                    PSFIndex i00 = idx;
+                    i00.focus = lowerFocus;
+                    i00.aperture = lowerAperture;
+                    PSFIndex i01 = idx;
+                    i00.focus = lowerFocus;
+                    i00.aperture = upperAperture;
+                    PSFIndex i10 = idx;
+                    i00.focus = upperFocus;
+                    i00.aperture = lowerAperture;
+                    PSFIndex i11 = idx;
+                    i00.focus = upperFocus;
+                    i00.aperture = upperAperture;
+
+                    float interpolatedBlurRadius = Mathf.Lerp(
+                        Mathf.Lerp(
+                            stack.GetPSF(i00).blurRadiusDeg,
+                            stack.GetPSF(i01).blurRadiusDeg,
+                            fracAperture
+                        ),
+                        Mathf.Lerp(
+                            stack.GetPSF(i10).blurRadiusDeg,
+                            stack.GetPSF(i11).blurRadiusDeg,
+                            fracAperture
+                        ),
+                        fracFocus
+                    );
+
+                    float interpolatedBlurRadiusPx = ProjectBlurRadius(interpolatedBlurRadius);
+
+                    interpolatedPsfParams[i] = new(0, 0, interpolatedBlurRadiusPx);
+                    i += 1;
+								}
+            });
+
+            int numTextureLayers = 0;
+            for (int psfIndex = 0; psfIndex < stack.objectDistances.Count; psfIndex += 1)
+						{
+                int maxNumLayers = 1;
+                if (psfIndex < stack.objectDistances.Count - 1)
+								{
+                    for (int channel = 0; channel < stack.lambdas.Count; channel += 1)
+										{
+                        float r0 = interpolatedPsfParams[(psfIndex) * stack.lambdas.Count + channel].blurRadius;
+                        float r1 = interpolatedPsfParams[(psfIndex + 1) * stack.lambdas.Count + channel].blurRadius;
+                        int textureLayers = Mathf.CeilToInt(Mathf.Abs(r1 - r0));
+                        maxNumLayers = Mathf.Max(maxNumLayers, textureLayers);
+										}
+								}
+
+                interpolatedPsfParams[(psfIndex) * stack.lambdas.Count].startLayer = (uint)numTextureLayers;
+                interpolatedPsfParams[(psfIndex) * stack.lambdas.Count].numLayers = (uint)maxNumLayers;
+                numTextureLayers += maxNumLayers;
+						}
+
+            return interpolatedPsfParams;
+				}
+
         // "C# PSF parameter buffer"
         PsfParam[] csPsfParamsBuffer = CreatePsfParamBuffer(psfStack);
         psfParamsBuffer.SetData(csPsfParamsBuffer);
 
         float[] csPsfWeightsBuffer = CreatePsfWeightBuffer(psfStack);
         psfWeightsBuffer.SetData(csPsfWeightsBuffer);
+
+        // 1. Interpolate blur radius over aperture diameter / focus distance. For now, we only have 1 aperture / 1 focus, so the actual values of aperture / focus are irrelevant
+        InterpolatedPsfParam[] csInterpolatedPsfParamsBuffer = CreateInterpolatedPsfParamBuffer(psfStack, 0.0f, 0.0f);
+        interpolatedPsfParamsBuffer.SetData(csInterpolatedPsfParamsBuffer);
+        
     }
+
+    float ProjectBlurRadius(float blurRadius)
+		{
+        return (blurRadius / Camera.main.fieldOfView) * Screen.height;
+		}
 
     private void UpdateAberrationSettings()
     {
@@ -422,6 +562,6 @@ public class AberrationRenderPass : ScriptableRenderPass
 
         psfParamsBuffer?.Release();
         psfWeightsBuffer?.Release();
-}
+    }
 }
 

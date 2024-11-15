@@ -4,6 +4,7 @@
 #pragma kernel TileBufferSplat
 #pragma kernel SortFragments
 #pragma kernel BlurTest
+#pragma kernel InterpolatePSFTexture
 
 //#pragma enable_cbuffer
 
@@ -285,6 +286,34 @@ struct CoordinatesIndices {
 	uint groupSize;
 	uint batchSize;
 };
+
+// Interpolate PsfParam to squeeze away the aperture diameter and focus distance dimensions (these are fixed in a given frame)
+// Unlike Csoba, we perform the calculation of 3D texture on CPU instead
+struct InterpolatedPsfParam {
+		uint startLayer;
+		uint numLayers;
+		float blurRadius;
+};
+
+StructuredBuffer<InterpolatedPsfParam> interpolatedPsfParams;
+StructuredBuffer<uint> psfInterpolationBuffer;
+
+// default from Csoba's code
+#define INTERPOLATION_GROUP_SIZE 8
+[numthreads(INTERPOLATION_GROUP_SIZE, INTERPOLATION_GROUP_SIZE, 1)]
+void InterpolatePSFTexture(uint3 id_in_tile: SV_DispatchThreadID) {
+		uint2 sampleCoords = id_in_tile.xy;
+		uint layerId = id_in_tile.z;
+
+		uint2 apertureIds;
+		uint2 focusIds;
+		uint psfId;
+		uint3 psfIds;
+}
+
+
+// Interpolate PSFs to squeeze away the aperture diameter / focus distance dimensions, and also rearrange data into a 3D texture so that
+// we can utilize hardware texture samplers to get good performance
 
 
 
