@@ -3,12 +3,21 @@
 #pragma kernel TileBufferBuild
 #pragma kernel TileBufferSplat
 #pragma kernel SortFragments
+#pragma kernel Convolve
 #pragma kernel BlurTest
 
 //#pragma enable_cbuffer
 
+#define FLT_MAX 3.402823466e+38F
+
+/* These must be synced with constants in the render pass */
 #define TILE_SIZE 16
-#define TILE_MAX_FRAGMENTS 8192
+#define TILE_MAX_FRAGMENTS 1024
+#define SHARED_ARRAY_SIZE 256 // TILE_SIZE * TILE_SIZE
+#define BOX_BLUR_RADIUS 16
+#define BOX_BLUR_WEIGHT (1.0f / 1089.0f) // 1 / (2 * BOX_BLUR_RADIUS + 1)^2
+
+#define CEIL_DIV(x, y) ((x - 1) / y + 1)
 
 //CBUFFER_START(TileSplatParams)
 cbuffer TileSplatParams {
@@ -29,7 +38,7 @@ struct FragmentData
 
 RWStructuredBuffer<FragmentData> fragmentBuffer;
 
-RWStructuredBuffer<uint> tileFragmentCountBuffer;
+RWStructuredBuffer<uint> tileFragmentCountBuffer; // num of fragments in each tile
 
 struct SortIndex
 {
@@ -45,18 +54,28 @@ RWTexture2D<float4> oColor;
 // depth is stored in .x
 Texture2D<float4> iDepth;
 
+struct PsfParam {
+	uint minBlurRadius; // px
+	uint maxBlurRadius; // px
+	uint numPsfWeights;
+	float blurRadiusDeg;
+};
+
+StructuredBuffer<float> psfWeights;
+StructuredBuffer<PsfParam> psfParams;
+
 uint FragmentArrayIndex(const uint2 fragmentCoord)
 {
 	return fragmentCoord.y * resolution.x + fragmentCoord.x;
 }
 
-// Index for tileSortBuffer
-uint TileArrayIndex(const uint2 tileCoord)
+// Index for tileSortBuffer, first index of fragment in that tile
+uint TileArrayIndex(const uint2 tileCoord) 
 {
 	return (tileCoord.y * numTiles.x + tileCoord.x) * TILE_MAX_FRAGMENTS;
 }
 
-// Index for tileFragmentCountBuffer
+// Index for tileFragmentCountBuffer, linearize 2d tile coord
 uint TileCountArrayIndex(const uint2 tileCoord)
 {
 	return tileCoord.y * numTiles.x + tileCoord.x;
@@ -69,7 +88,55 @@ bool IsValidTileCoord(const uint2 tileCoord)
 
 float3 SphericalCoordinates(const uint2 screenPosition, const float depth)
 {
-	// do something
+	
+	// fragmentData.vPsfIndex = sphericalCoordinates(fragmentCoord, fragmentDepth);
+	// 	vec3 sphericalCoordinatesOffAxis(const ivec2 screenPos, const float depth)
+	// {
+	// 	return convertSphericalCoordinates(screenToSphericalCoordinates(screenPos, sTiledSplatBlurData.vResolution, depth));
+	// }
+	// 	vec3 convertSphericalCoordinates(const vec3 sphericalCoords)
+	// {
+	// 	return vec3(convertIncidentAngles(sphericalCoords.xy), convertDepth(sphericalCoords.z));
+	// }
+	// // Converts the input incident angles to the appropriate representation for rendering
+	// vec2 convertIncidentAngles(const vec2 anglesRad)
+	// {
+	// 	return clamp
+	// 	(
+	// 		degrees(anglesRad),
+	// 		vec2(sTiledSplatBlurData.fHorizontalAnglesMin, sTiledSplatBlurData.fVerticalAnglesMin),
+	// 		vec2(sTiledSplatBlurData.fHorizontalAnglesMax, sTiledSplatBlurData.fVerticalAnglesMax)
+	// 	);
+	// }
+	// // Converts the input camera-space depth to the appropriate representation for rendering
+	// float convertDepth(const float depth)
+	// {
+	// 	return max(depth + sTiledSplatBlurData.fDepthOffset, 1e-4);
+	// }
+	// // Returns the spherical coordinates of the input screen position
+	// // Inputs:
+	// // - screenPos: screen-space coordinates [0, resolution - 1]
+	// // - depth: corresponding depth buffer value
+	// //
+	// // Returns:
+	// // - result[0:1]: horizontal and vertical angles, in radians
+	// // - result[2]:   distance, in meters
+	// vec3 screenToSphericalCoordinates(const ivec2 screenPos, const ivec2 resolution, const float depth)
+	// {
+
+	// 	const vec3 camPos = reconstructPositionCS(screenPos, resolution, depth); // Convert from clip-space to camera space
+
+	// 	const vec2 angles = vec2(atan2(camPos.x, -camPos.z), atan2(camPos.y, length(camPos.zx))); // azimuth and elevation terms
+	// 	const float radius = meters(length(camPos));
+	// 	return vec3(angles, radius);
+	// }
+
+	// // Returns the spherical coordinates of the input screen position
+	// vec3 screenToSphericalCoordinates(const ivec2 screenPos, const float depth)
+	// {
+	//     return screenToSphericalCoordinates(screenPos, ivec2(sRenderData.vResolution), depth);
+	// }
+
 }
 
 float ComputePsfIndex(const uint2 screenPosition, const float depth)
@@ -92,6 +159,13 @@ float ComputeSortDepth(const uint2 screenPosition, const float depth)
 bool OverlapsTile(const uint2 tileCoord, const uint2 fragmentCoord, const float blurRadius)
 {
 	return true;
+}
+
+// fragmentData is being splatted to fragmentCoord
+float SamplePsf(const uint2 fragmentCoord, const FragmentData fragmentData)
+{
+	int2 delta = fragmentCoord - fragmentData.screenPosition;
+	return all(delta >= -BOX_BLUR_RADIUS && delta <= BOX_BLUR_RADIUS) ? BOX_BLUR_WEIGHT : 0;
 }
 
 // unused currently
@@ -174,7 +248,7 @@ void TileBufferSplat(uint3 id : SV_DispatchThreadID)
 	sortIndex.fragmentIndex = fragmentIndex;
 	sortIndex.depth = ComputeSortDepth(fragmentData.screenPosition, fragmentData.psfIndex);
 
-	const int numTilesSplat = 1;
+	const int numTilesSplat = CEIL_DIV(maxBlurRadiusCurrent, TILE_SIZE);
 
 	for (int i = -numTilesSplat; i <= numTilesSplat; i++)
 	{
@@ -191,8 +265,15 @@ void TileBufferSplat(uint3 id : SV_DispatchThreadID)
 
 			uint neighborFragmentCount;
 			InterlockedAdd(tileFragmentCountBuffer[neighborCountIndex], 1, neighborFragmentCount);
-			tileSortBuffer[neighborTileIndex + neighborFragmentCount] = sortIndex;
+			if (neighborFragmentCount < TILE_MAX_FRAGMENTS)
+				tileSortBuffer[neighborTileIndex + neighborFragmentCount] = sortIndex;
 		}
+	}
+
+	if (all(threadId == 0))
+	{
+		if (tileFragmentCountBuffer[countIndex] > TILE_MAX_FRAGMENTS)
+			tileFragmentCountBuffer[countIndex] = TILE_MAX_FRAGMENTS;
 	}
 }
 
@@ -222,25 +303,37 @@ void BlurTest(uint3 id : SV_DispatchThreadID)
 	oColor[id.xy] = color;
 }
 
+//RWStructuredBuffer<uint> indices;
+//RWStructuredBuffer<float> depths;
 
-#define MAX_FRAGMENTS_PER_TILE 1024
+groupshared uint fragmentIndices[TILE_MAX_FRAGMENTS];
+groupshared float fragmentDepths[TILE_MAX_FRAGMENTS];
 
-RWStructuredBuffer<uint> indices;
-RWStructuredBuffer<float> depths;
+[numthreads(TILE_MAX_FRAGMENTS,1,1)]
+void SortFragments(uint3 id_dispatch : SV_DispatchThreadID) {
+	uint threadId = id_dispatch.x;
+	uint2 tileCoord = id_dispatch.yz;
+	
+	const uint countIndex = TileCountArrayIndex(tileCoord);
+	const uint tileIndex = TileArrayIndex(tileCoord);
 
-groupshared uint fragmentIndices[MAX_FRAGMENTS_PER_TILE];
-groupshared float fragmentDepths[MAX_FRAGMENTS_PER_TILE];
+	const uint fragmentCount = tileFragmentCountBuffer[countIndex];
 
-[numthreads(MAX_FRAGMENTS_PER_TILE,1,1)]
-void SortFragments(uint3 id_in_tile : SV_DispatchThreadID) {
-	uint id = id_in_tile.x;
-	fragmentIndices[id] = indices[id];
-	fragmentDepths[id] = depths[id];
+	SortIndex sortIndex = tileSortBuffer[tileIndex + threadId];
+	if (threadId < fragmentCount)
+	{
+		fragmentIndices[threadId] = sortIndex.fragmentIndex;
+		fragmentDepths[threadId] = sortIndex.depth;
+	}
+	else
+	{
+		fragmentDepths[threadId] = FLT_MAX;
+	}
 	GroupMemoryBarrierWithGroupSync();
 
-	for (uint k = 2; k <= MAX_FRAGMENTS_PER_TILE; k *= 2) {
+	for (uint k = 2; k <= TILE_MAX_FRAGMENTS; k *= 2) {
 		for (uint j = k / 2; j > 0; j /= 2) {
-			uint i = id;
+			uint i = threadId;
 			uint l = i ^ j;
 			if (l > i) {
 				if (((i & k) == 0 && fragmentDepths[i] > fragmentDepths[l]) || ((i & k) != 0 && fragmentDepths[i] < fragmentDepths[l])) {
@@ -259,34 +352,12 @@ void SortFragments(uint3 id_in_tile : SV_DispatchThreadID) {
 		}
 	}
 
-	indices[id] = fragmentIndices[id];
-	depths[id] = fragmentDepths[id];
+	sortIndex.fragmentIndex = fragmentIndices[threadId];
+	sortIndex.depth = fragmentDepths[threadId];
+	tileSortBuffer[tileIndex + threadId] = sortIndex;
+	// indices[id] = fragmentIndices[id];
+	// depths[id] = fragmentDepths[id];
 }
-
-struct PsfParam {
-	uint minBlurRadius; // px
-	uint maxBlurRadius; // px
-	uint numPsfWeights;
-	float blurRadiusDeg;
-};
-
-StructuredBuffer<float> psfWeights;
-StructuredBuffer<PsfParam> psfParams;
-
-
-struct CoordinatesIndices {
-	uint2 fragmentCoord;
-	uint2 tileId;
-	uint2 threadId;
-	uint threadIndex;
-	uint arrayIndex;
-	uint countArrayIndex;
-	uint numTileFragments;
-	uint groupSize;
-	uint batchSize;
-};
-
-
 
 // // Perform convolution
 // uint unpackBatchFragments(const int batchId) {
@@ -305,6 +376,75 @@ struct CoordinatesIndices {
 // void convolveFragment() {
 
 // }
+struct CoordinatesIndices {
+	uint2 fragmentCoord;
+	uint2 tileId;
+	uint2 threadId;
+	uint threadIndex;
+	uint arrayIndex;
+	uint countArrayIndex;
+	uint numTileFragments;
+	uint groupSize;
+	uint batchSize;
+};
+
+groupshared FragmentData tileFragments[SHARED_ARRAY_SIZE];
+
+[numthreads(TILE_SIZE, TILE_SIZE, 1)]
+void Convolve(uint3 id : SV_DispatchThreadID)
+{
+	const uint2 tileCoord = id.xy / TILE_SIZE;
+	const uint2 threadId = id.xy % TILE_SIZE;
+	const uint2 fragmentCoord = id.xy;
+
+	const uint fragmentIndex = FragmentArrayIndex(fragmentCoord);
+	const uint countIndex = TileCountArrayIndex(tileCoord);
+	const uint tileIndex = TileArrayIndex(tileCoord);
+
+	uint fragmentCount = tileFragmentCountBuffer[countIndex];
+
+	const uint threadIndex = threadId.y * TILE_SIZE + threadId.x;
+
+	/* Front to back alpha blending using premultiplied alpha */
+	float3 result = float3(0, 0, 0);
+	float3 alpha = float3(0, 0, 0);
+
+	/* Groupshare ver. */
+	for (uint batchId = 0; batchId < TILE_MAX_FRAGMENTS / SHARED_ARRAY_SIZE; batchId++)
+	{
+		bool garbage = batchId * SHARED_ARRAY_SIZE + threadIndex >= fragmentCount;
+		SortIndex sortIndex = tileSortBuffer[tileIndex + batchId * SHARED_ARRAY_SIZE + threadIndex];
+		if (!garbage)
+			tileFragments[threadIndex] = fragmentBuffer[sortIndex.fragmentIndex];
+		GroupMemoryBarrierWithGroupSync();
+
+		if (!garbage)
+		{
+			for (int i = 0; i < SHARED_ARRAY_SIZE; i++)
+			{
+				FragmentData fragmentData = tileFragments[i];
+				float3 weight = SamplePsf(fragmentCoord, fragmentData);
+
+				result += (1.0 - alpha) * weight * fragmentData.color;
+				alpha = weight + (1.0 - weight) * alpha;
+			}
+		}
+		GroupMemoryBarrierWithGroupSync();
+	}
+
+	/* No groupshare ver. */
+	// for (int i = 0; i < tileFragmentCountBuffer[countIndex]; i++)
+	// {
+	// 	SortIndex sortIndex = tileSortBuffer[tileIndex + i];
+	// 	FragmentData fragmentData = fragmentBuffer[sortIndex.fragmentIndex];
+	// 	float3 weight = samplePsf(fragmentCoord, fragmentData);
+
+	// 	result += (1.0 - alpha) * weight * fragmentData.color;
+	// 	alpha = weight + (1.0 - weight) * alpha;
+	// }
+	
+	oColor[fragmentCoord] = float4(result, 1);
+}
 
 // [numthreads(32, 32, 1)] // fix this
 // void Convolution(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 localThreadID : SV_GroupThreadID)
