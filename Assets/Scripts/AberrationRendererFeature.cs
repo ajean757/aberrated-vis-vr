@@ -29,6 +29,7 @@ public class AberrationRendererFeature : ScriptableRendererFeature
         // }
         // material = new Material(shader);
         //aberrationRenderPass = new AberrationRenderPass(material, settings, computeShader);
+        settings = new();
         settings.PSFSet = PSFSet;
         aberrationRenderPass = new AberrationRenderPass(settings, computeShader);
         aberrationRenderPass.renderPassEvent = RenderPassEvent.BeforeRenderingPostProcessing;
