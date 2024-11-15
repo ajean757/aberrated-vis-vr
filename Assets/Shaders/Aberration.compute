@@ -266,7 +266,7 @@ void SortFragments(uint3 id_in_tile : SV_DispatchThreadID) {
 struct PsfParam {
 	uint minBlurRadius; // px
 	uint maxBlurRadius; // px
-	uint numPsfWeights;
+	uint weightStartIndex;
 	float blurRadiusDeg;
 };
 

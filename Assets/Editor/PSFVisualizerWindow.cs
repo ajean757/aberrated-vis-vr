@@ -9,6 +9,7 @@ public class PSFVisualizerWindow : EditorWindow
     private PSFStack psfStack;
     private PSF psf;
     private float[,] matrixData;
+    private int blurRadiusIndex = 0;
     private int rows = 0;
     private int cols = 0;
 
@@ -50,6 +51,7 @@ public class PSFVisualizerWindow : EditorWindow
 
             if (psf != null)
             {
+                GUILayout.Label("Blur Radius: " + (psf.minBlurRadius + blurRadiusIndex));
                 if (matrixData == null)
                 {
                     ExtractMatrixData();
@@ -96,7 +98,7 @@ public class PSFVisualizerWindow : EditorWindow
 
                 AberrationRenderPass renderPass = feature.GetRenderPass();
                 psfStack = renderPass.psfStack;
-
+                blurRadiusIndex = 0;
                 return psfStack.stack[0, 0, 0, 0, 0, 0];
             }
         }
@@ -112,7 +114,7 @@ public class PSFVisualizerWindow : EditorWindow
         // Example: Assume you extracted a 2D matrix from the pipeline asset
         if (psf != null)
         {
-            matrixData = psf.weights;
+            matrixData = psf.weights[blurRadiusIndex];
             rows = matrixData.GetLength(0);
             cols = matrixData.GetLength(1);
         }

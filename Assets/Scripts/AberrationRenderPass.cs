@@ -7,6 +7,34 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Linq;
 
+
+/*
+struct PsfParam
+{
+    uint minBlurRadius; // px
+    uint maxBlurRadius; // px
+    uint weightStartIndex;
+    float blurRadiusDeg;
+};
+*/
+[StructLayout(LayoutKind.Sequential)]
+struct PsfParam
+{
+    public uint minBlurRadius;
+    public uint maxBlurRadius;
+    public uint weightStartIndex;
+    public float blurRadiusDeg;
+
+    public PsfParam(uint minBlurRadius, uint maxBlurRadius, uint weightStartIndex, float blurRadiusDeg)
+		{
+        this.minBlurRadius = minBlurRadius;
+        this.maxBlurRadius = maxBlurRadius;
+        this.weightStartIndex = weightStartIndex;
+        this.blurRadiusDeg = blurRadiusDeg;
+		}
+}
+
+
 public class AberrationRenderPass : ScriptableRenderPass
 {
     // Defined consts in compute shader
@@ -90,6 +118,63 @@ public class AberrationRenderPass : ScriptableRenderPass
         // read in PSFs
         psfStack = new();
         psfStack.ReadPsfStack(defaultSettings.PSFSet);
+
+        
+        int psfParamStructSize = Marshal.SizeOf<PsfParam>();
+        psfParamsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, psfStack.PSFCount(), psfParamStructSize);
+        psfParamsBuffer.name = "PSF Parameters";
+
+        psfWeightsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, psfStack.TotalWeights(), sizeof(float));
+        psfWeightsBuffer.name = "PSF Weights Buffer";
+
+
+        
+
+        // move data onto GPU at Pass Creation time
+        PsfParam[] CreatePsfParamBuffer(PSFStack stack)
+				{
+            PsfParam[] psfParams = new PsfParam[stack.PSFCount()];
+            uint weightCount = 0;
+            stack.Iterate((idx, psf) =>
+            {
+                int linearIdx = stack.LinearizeIndex(idx);
+                psfParams[linearIdx] = new((uint) psf.minBlurRadius, (uint) psf.maxBlurRadius, weightCount, psf.blurRadiusDeg);
+                weightCount += (uint)psf.NumWeights();
+            });
+
+            return psfParams;
+				}
+
+        float[] CreatePsfWeightBuffer(PSFStack stack)
+				{
+            float[] psfWeights = new float[stack.TotalWeights()];
+            uint idx = 0;
+            stack.Iterate((_, psf) =>
+            {
+                for (int r = psf.minBlurRadius; r <= psf.maxBlurRadius; r += 1)
+								{
+                    float[,] m = psf.weights[r - psf.minBlurRadius];
+                    // row-major
+                    for (int i = 0; i < m.GetLength(0); i += 1)
+										{
+                        for (int j = 0; j < m.GetLength(1); j += 1)
+												{
+                            psfWeights[idx] = m[i, j];
+                            idx += 1;
+												}
+										}
+								}
+            });
+
+            return psfWeights;
+				}
+
+        // "C# PSF parameter buffer"
+        PsfParam[] csPsfParamsBuffer = CreatePsfParamBuffer(psfStack);
+        psfParamsBuffer.SetData(csPsfParamsBuffer);
+
+        float[] csPsfWeightsBuffer = CreatePsfWeightBuffer(psfStack);
+        psfWeightsBuffer.SetData(csPsfWeightsBuffer);
     }
 
     private void UpdateAberrationSettings()
@@ -334,5 +419,9 @@ public class AberrationRenderPass : ScriptableRenderPass
 
         indicesBuffer?.Release();
         depthsBuffer?.Release();
-    }
+
+        psfParamsBuffer?.Release();
+        psfWeightsBuffer?.Release();
 }
+}
+
