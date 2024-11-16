@@ -78,6 +78,10 @@ public class PSFStack
     public List<float> focusDioptres;
     public List<float> focusDistances;
 
+    public float objectDioptresStep;
+    public float apertureDiametersStep;
+    public float focusDioptresStep;
+
     public void ReadPsfStack(string psfSetName)
     {
         string psfStackFilename = Path.Combine(psfSetName, "psfstack");
@@ -107,6 +111,11 @@ public class PSFStack
         this.apertureDiameters = ParseLine(lines[5]);
         this.incidentAnglesHorizontal = ParseLine(lines[6]);
         this.incidentAnglesVertical = ParseLine(lines[7]);
+
+        // if only 1 value, step size is irrelevant (as long as it's not zero)
+        objectDioptresStep = objectDioptres.Count > 1 ? Mathf.Abs(objectDioptres[1] - objectDioptres[0]) : 1.0f;
+        apertureDiametersStep = apertureDiameters.Count > 1 ? Mathf.Abs(apertureDiameters[1] - apertureDiameters[0]) : 1.0f;
+        focusDioptresStep = focusDioptres.Count > 1 ? Mathf.Abs(focusDioptres[1] - focusDioptres[0]) : 1.0f;
 
         ReadPsfFiles(psfSetName);
     }

@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Linq;
 using System;
+using Unity.Mathematics;
 
 
 /*
@@ -73,7 +74,24 @@ public class AberrationRenderPass : ScriptableRenderPass
     // Params
     private static readonly int numTilesId = Shader.PropertyToID("numTiles");
     private static readonly int resolutionId = Shader.PropertyToID("resolution");
+    private static readonly int minBlurRadiusCurrentId = Shader.PropertyToID("minBlurRadiusCurrent");
     private static readonly int maxBlurRadiusCurrentId = Shader.PropertyToID("maxBlurRadiusCurrent");
+
+    private static readonly int numObjectDioptresId = Shader.PropertyToID("numObjectDioptres");
+    private static readonly int objectDioptresMinId = Shader.PropertyToID("objectDioptresMin");
+    private static readonly int objectDioptresMaxId = Shader.PropertyToID("objectDioptresMax");
+    private static readonly int objectDioptresStepId = Shader.PropertyToID("objectDioptresStep");
+    private static readonly int numAperturesId = Shader.PropertyToID("numApertures");
+    private static readonly int aperturesMinId = Shader.PropertyToID("aperturesMin");
+    private static readonly int aperturesMaxId = Shader.PropertyToID("aperturesMax");
+    private static readonly int aperturesStepId = Shader.PropertyToID("aperturesStep");
+    private static readonly int numFocusDioptresId = Shader.PropertyToID("numFocusDioptres");
+    private static readonly int focusDioptresMinId = Shader.PropertyToID("focusDioptresMin");
+    private static readonly int focusDioptresMaxId = Shader.PropertyToID("focusDioptresMax");
+    private static readonly int focusDioptresStepId = Shader.PropertyToID("focusDioptresStep");
+
+    private static readonly int apertureId = Shader.PropertyToID("aperture");
+    private static readonly int focusDistanceId = Shader.PropertyToID("focusDistance");
 
     // Kernels (initialized in constructor)
     private readonly int tileBufferBuildIndex;
@@ -112,6 +130,7 @@ public class AberrationRenderPass : ScriptableRenderPass
     private GraphicsBuffer psfParamsBuffer;
     private GraphicsBuffer psfWeightsBuffer;
     private GraphicsBuffer interpolatedPsfParamsBuffer;
+    private GraphicsBuffer psfInterpolationBuffer;
 
     public PSFStack psfStack;
 
@@ -143,7 +162,35 @@ public class AberrationRenderPass : ScriptableRenderPass
         psfStack = new();
         psfStack.ReadPsfStack(defaultSettings.PSFSet);
 
+        // Set aperture diameter / focus distance uniforms - default is 5 mm pupil size focused at 8 m (optical infinity) away
+        // TODO: this should be user-adjustable using some nice UI, or should maybe dynamically adjust based on scene conditions
+        cs.SetFloat(apertureId, 5.0f);
+        cs.SetFloat(focusDistanceId, 8.0f);
 
+        // Set min / max blur radius parameters - these are dependent on resolution / vertical field of view
+        // TODO: the numbers we are getting from Csoba are only at one particular resolution / vfov (already in screen space), 
+        // ideally we have "retina-space" PSFs so we can do the conversion on the fly ourselves
+        // This limitation means we are locked into 1280*720, 60deg vertical FOV for accurate simulation
+        int2 blurRadiusLimits = BlurRadiusLimits();
+        cs.SetInt(minBlurRadiusCurrentId, blurRadiusLimits[0]);
+        cs.SetInt(maxBlurRadiusCurrentId, blurRadiusLimits[1]);
+
+        // Set aperture diameter / focus distance evaluation range uniforms
+        cs.SetInt(numObjectDioptresId, psfStack.objectDioptres.Count);
+        cs.SetFloat(objectDioptresMinId, psfStack.objectDioptres.Min());
+        cs.SetFloat(objectDioptresMaxId, psfStack.objectDioptres.Max());
+        cs.SetFloat(objectDioptresStepId, psfStack.objectDioptresStep);
+        cs.SetInt(numAperturesId, psfStack.apertureDiameters.Count);
+        cs.SetFloat(aperturesMinId, psfStack.apertureDiameters.Min());
+        cs.SetFloat(aperturesMaxId, psfStack.apertureDiameters.Max());
+        cs.SetFloat(aperturesStepId, psfStack.apertureDiametersStep);
+        cs.SetInt(numFocusDioptresId, psfStack.focusDioptres.Count);
+        cs.SetFloat(focusDioptresMinId, psfStack.focusDioptres.Min());
+        cs.SetFloat(focusDioptresMaxId, psfStack.focusDioptres.Max());
+        cs.SetFloat(focusDioptresStepId, psfStack.focusDioptresStep);
+
+
+        // Create Buffers for PSF interpolation
         int psfParamStructSize = Marshal.SizeOf<PsfParam>();
         psfParamsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, psfStack.PSFCount(), psfParamStructSize);
         psfParamsBuffer.name = "PSF Parameters";
@@ -155,8 +202,12 @@ public class AberrationRenderPass : ScriptableRenderPass
         interpolatedPsfParamsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, psfStack.InterpolatedPSFCount(), interpolatedPsfParamStructSize);
         interpolatedPsfParamsBuffer.name = "Interpolated PSF Parameters";
 
+        // hardcoded to have 1024 interpolated PSFs at most
+        int psfInterpolationBufferSize = 1 << 10;
+        psfInterpolationBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, psfInterpolationBufferSize, sizeof(uint));
+        psfInterpolationBuffer.name = "PSF Interpolation Buffer";
 
-        // move data onto GPU at Pass Creation time
+
         PsfParam[] CreatePsfParamBuffer(PSFStack stack)
         {
             PsfParam[] psfParams = new PsfParam[stack.PSFCount()];
@@ -293,11 +344,35 @@ public class AberrationRenderPass : ScriptableRenderPass
 
                 interpolatedPsfParams[(psfIndex) * stack.lambdas.Count].startLayer = (uint)numTextureLayers;
                 interpolatedPsfParams[(psfIndex) * stack.lambdas.Count].numLayers = (uint)maxNumLayers;
+
+
                 numTextureLayers += maxNumLayers;
             }
 
             return interpolatedPsfParams;
         }
+
+        uint[] CreatePsfInterpolationBuffer(InterpolatedPsfParam[] interpolatedPsfParams)
+        {
+            uint psfIndex = 0;
+            uint[] psfInterpolationBuffer = new uint[psfInterpolationBufferSize];
+            foreach (var interpolatedPsfParam in interpolatedPsfParams)
+            {
+                for (uint i = interpolatedPsfParam.startLayer; i < (interpolatedPsfParam.startLayer + interpolatedPsfParam.numLayers); i += 1)
+                {
+                    psfInterpolationBuffer[i + 1] = psfIndex;
+                }
+                psfIndex += 1;
+            }
+
+            InterpolatedPsfParam lastInterpolatedPsfParam = interpolatedPsfParams[interpolatedPsfParams.Length - 1];
+            uint totalTextureLayers = lastInterpolatedPsfParam.startLayer + lastInterpolatedPsfParam.numLayers;
+            psfInterpolationBuffer[0] = totalTextureLayers;
+
+            return psfInterpolationBuffer;
+        }
+
+        // Move Data onto GPU at Pass Creation time
 
         // "C# PSF parameter buffer"
         PsfParam[] csPsfParamsBuffer = CreatePsfParamBuffer(psfStack);
@@ -306,15 +381,39 @@ public class AberrationRenderPass : ScriptableRenderPass
         float[] csPsfWeightsBuffer = CreatePsfWeightBuffer(psfStack);
         psfWeightsBuffer.SetData(csPsfWeightsBuffer);
 
-        // 1. Interpolate blur radius over aperture diameter / focus distance. For now, we only have 1 aperture / 1 focus, so the actual values of aperture / focus are irrelevant
+        // Interpolate blur radius over aperture diameter / focus distance. For now, the aberration set we are using (healthy) only has one possible value for both, so the actual values of aperture / focus are irrelevant
         InterpolatedPsfParam[] csInterpolatedPsfParamsBuffer = CreateInterpolatedPsfParamBuffer(psfStack, 0.0f, 0.0f);
         interpolatedPsfParamsBuffer.SetData(csInterpolatedPsfParamsBuffer);
 
+        uint[] csPsfInterpolationBuffer = CreatePsfInterpolationBuffer(csInterpolatedPsfParamsBuffer);
+        psfInterpolationBuffer.SetData(csPsfInterpolationBuffer);
     }
 
+    // these two are basically equivalent; one comes from GLSL while the other comes from C++
     float ProjectBlurRadius(float blurRadius)
     {
         return (blurRadius / Camera.main.fieldOfView) * Screen.height;
+    }
+
+    float BlurRadiusPixels(PSF psf, int2 resolution, float fovy)
+    {
+        return (psf.blurRadiusDeg / fovy) * resolution.y;
+    }
+
+    int2 BlurRadiusLimits()
+    {
+        float fovy = Camera.main.fieldOfView;
+        int2 resolution = new(this.resolution.x, this.resolution.y);
+        int minBlurRadius = int.MaxValue;
+        int maxBlurRadius = int.MinValue;
+        psfStack.Iterate((idx, psf) =>
+        {
+            float blurRadius = BlurRadiusPixels(psf, resolution, fovy);
+            minBlurRadius = Mathf.Min(minBlurRadius, Mathf.FloorToInt(blurRadius));
+            maxBlurRadius = Mathf.Max(maxBlurRadius, Mathf.CeilToInt(blurRadius));
+        });
+
+        return new(minBlurRadius, maxBlurRadius);
     }
 
     private void UpdateAberrationSettings()
@@ -487,7 +586,7 @@ public class AberrationRenderPass : ScriptableRenderPass
             builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) =>
             {
                 List<int> range = Enumerable.Range(0, 1024).ToList();
-                List<float> randomDepths = Enumerable.Range(0, 1024).Select(_ => Random.Range(0.0f, 1.0f)).ToList();
+                List<float> randomDepths = Enumerable.Range(0, 1024).Select(_ => UnityEngine.Random.Range(0.0f, 1.0f)).ToList();
 
                 // Debug.Log("SortFragments Start");
 

@@ -17,9 +17,29 @@ cbuffer TileSplatParams
     uint2 numTiles;
     uint2 resolution;
 
+    uint minBlurRadiusCurrent;
     uint maxBlurRadiusCurrent;
+	
+    uint numObjectDioptres;
+    float objectDioptresMin;
+    float objectDioptresMax;
+    float objectDioptresStep;
+    uint numApertures;
+    float aperturesMin;
+    float aperturesMax;
+    float aperturesStep;
+    uint numFocusDioptres;
+    float focusDioptresMin;
+    float focusDioptresMax;
+    float focusDioptresStep;
 };
 //CBUFFER_END
+
+cbuffer CameraData
+{
+    float aperture;
+    float focusDistance;
+};
 
 struct FragmentData
 {
@@ -308,7 +328,190 @@ struct InterpolatedPsfParam
 };
 
 StructuredBuffer<InterpolatedPsfParam> interpolatedPsfParams;
-StructuredBuffer<uint> psfInterpolationBuffer;
+StructuredBuffer<uint> psfInterpolationBuffer; // note: 1-indexed, 0th entry contains total count
+
+// 2 "views" into the same underlying texture - must use psfImage to write, then psfTexture to read
+// HLSL runtime enforces that the same underlying texture resource cannot be used both in read and write mode
+// Need the "read" view even though RWTexture would suggest it is also readable, because RWTexture3D doesn't support
+// texture sampling, which we need
+
+// also Csoba's code uses r11_g11_b10 (11 bits for R, G and 10 bits for B) to compress the texture memory used by default
+// float4 is probably simpler? we could also consider this optimization in the future.
+RWTexture3D<float4> psfImage;
+Texture3D<float4> psfTexture;
+
+float3 ApertureIndices(float aperture)
+{
+    float frac = (aperture - aperturesMin) / aperturesStep;
+    int2 unclampedIndices = int2(floor(frac), ceil(frac));
+    int2 clampedIndices = clamp(unclampedIndices, 0, numApertures - 1);
+    return float3(clampedIndices.x, clampedIndices.y, frac);
+}
+
+float3 FocusIndices(float focusDistance)
+{
+    float focusDioptres = 1.0f / focusDistance;
+    float frac = (focusDioptres - focusDioptresMin) / focusDioptresStep;
+    int2 unclampedIndices = int2(floor(frac), ceil(frac));
+    int2 clampedIndices = clamp(unclampedIndices, 0, numFocusDioptres - 1);
+    return float3(clampedIndices.x, clampedIndices.y, frac);
+}
+
+// d = object distance index, c = channel index. We assume rank of channel dimension is always 3 (RGB)
+uint PsfParamArrayIndex(uint d, uint c)
+{
+    return d * 3 + c;
+}
+
+// l = layer ID, d = "base" PSF that l is associated with
+float LayerIdToPsfIndex(uint d, uint l)
+{
+    uint idx = PsfParamArrayIndex(d, 0); // start layer + num layers is only stored in R entry
+    uint s = interpolatedPsfParams[idx].startLayer;
+    uint n = interpolatedPsfParams[idx].numLayers;
+    return d + float(l - s) / float(n);
+}
+
+float3 LayerIdToPsfIndices(uint d, uint l)
+{
+    float frac = LayerIdToPsfIndex(d, l);
+    int2 unclampedIndices = int2(floor(frac), ceil(frac));
+    int2 clampedIndices = clamp(unclampedIndices, 0, numObjectDioptres - 1);
+    return float3(clampedIndices.x, clampedIndices.y, frac);
+}
+
+float LerpPsfRadius(float3 d, uint c)
+{
+    float psfRadius0 = interpolatedPsfParams[PsfParamArrayIndex((uint) d[0], c)].blurRadius;
+    float psfRadius1 = interpolatedPsfParams[PsfParamArrayIndex((uint) d[0], c)].blurRadius;
+    return lerp(psfRadius0, psfRadius1, d[2]);
+}
+
+bool IsSamplePadding(int2 sampleCoords, float3 psfIds)
+{
+	// calculate largest blur radius across all channels
+    float maxBlurRadius = 0.0f;
+    for (int i = 0; i < 3; i += 1)
+    {
+        float blurRadius = LerpPsfRadius(psfIds, i);
+        maxBlurRadius = max(maxBlurRadius, blurRadius);
+    }
+	
+    int2 lowerLeft = int2(int(maxBlurRadiusCurrent) - maxBlurRadius);
+    int2 upperRight = int2(int(maxBlurRadiusCurrent) + maxBlurRadius);
+    bool isPadding = any(sampleCoords < lowerLeft) || any(sampleCoords > upperRight);
+    return isPadding;
+}
+
+// bilinear interpolation
+float lerp2(
+	float f00,
+	float f01,
+	float f10,
+	float f11,
+	float x01,
+	float x10
+)
+{
+    float a = lerp(f00, f01, x01);
+    float b = lerp(f10, f11, x01);
+    return lerp(a, b, x10);
+}
+
+// trilinear interpolation
+float lerp3(
+	float f000,
+	float f001,
+	float f010,
+	float f011,
+	float f100,
+	float f101,
+	float f110,
+	float f111,
+	float x001,
+	float x010,
+	float x100
+)
+{
+    float a = lerp2(f000, f001, f010, f011, x001, x010);
+    float b = lerp2(f100, f101, f110, f111, x001, x010);
+    return lerp(a, b, x100);
+}
+
+uint PsfParamBufferIndex(uint d, uint a, uint f, uint c)
+{
+    return d * (3 * numApertures * numFocusDioptres)
+		+ c * (numApertures * numFocusDioptres)
+		+ a * (numFocusDioptres)
+		+ f;
+}
+
+// closed form sum of (2r+1)^2 for r from a to b (inclusive) 
+// apparently calculated using Mathematica
+uint WeightOffset(int a, int b)
+{
+    return (a - 4 * a * a * a + (1 + b) * (1 + 2 * b) * (3 + 2 * b)) / 3;
+}
+
+uint PsfWeightBufferIndex(uint psfParamIdx, uint r, uint minR, uint2 sc)
+{
+    uint base = psfParams[psfParamIdx].weightStartIndex;
+    uint sampleOffset = sc.y * (2 * r + 1) + sc.x;
+    if (r == minR)
+    {
+        return base + sampleOffset;
+    }
+    else
+    {
+        return base + WeightOffset(minR, r - 1) + sampleOffset;
+    }
+
+}
+
+float PsfWeight(uint psfParamIdx, uint r, uint2 sc)
+{
+    uint minR = psfParams[psfParamIdx].minBlurRadius;
+    uint maxR = psfParams[psfParamIdx].maxBlurRadius;
+    return (r >= minR && r <= maxR) ? psfWeights[PsfWeightBufferIndex(psfParamIdx, r, minR, sc)] : 0.0f;
+}
+
+float SamplePsfWeightBufferPadded(float3 d, float3 a, float3 f, uint c, uint r, uint2 scp)
+{
+	// remove padding from sample coordinates
+    int2 sc = int2(scp) - maxBlurRadiusCurrent + r;
+    
+	// determine if we are outside the spatial extent of the PSF entry we are sampling
+    int2 lowerLeft = int2(0);
+    int2 upperRight = int2(2 * r + 1);
+    if (any(sc < lowerLeft) || any(sc >= upperRight))
+    {
+        return 0.0f;
+    }
+	
+	// trilinearly interpolate over object distance, aperture diameter, focus distance
+    return lerp3(
+		PsfWeight(PsfParamBufferIndex((uint) d[0], (uint) a[0], (uint) f[0], c), r, sc),
+		PsfWeight(PsfParamBufferIndex((uint) d[0], (uint) a[0], (uint) f[1], c), r, sc),
+		PsfWeight(PsfParamBufferIndex((uint) d[0], (uint) a[1], (uint) f[0], c), r, sc),
+		PsfWeight(PsfParamBufferIndex((uint) d[0], (uint) a[1], (uint) f[1], c), r, sc),
+		PsfWeight(PsfParamBufferIndex((uint) d[1], (uint) a[0], (uint) f[0], c), r, sc),
+		PsfWeight(PsfParamBufferIndex((uint) d[1], (uint) a[0], (uint) f[1], c), r, sc),
+		PsfWeight(PsfParamBufferIndex((uint) d[1], (uint) a[1], (uint) f[0], c), r, sc),
+		PsfWeight(PsfParamBufferIndex((uint) d[1], (uint) a[1], (uint) f[1], c), r, sc),
+		f[2],
+		a[2],
+		d[2]
+	);
+}
+
+float SamplePsfWeightBufferPadded(float3 d, float3 a, float3 f, uint c, float3 r, uint2 scp)
+{
+    return lerp(
+		SamplePsfWeightBufferPadded(d, a, f, c, (uint) r[0], scp),
+		SamplePsfWeightBufferPadded(d, a, f, c, (uint) r[1], scp),
+		r[2]
+	);
+}
 
 // default from Csoba's code
 #define INTERPOLATION_GROUP_SIZE 8
@@ -318,10 +521,26 @@ void InterpolatePSFTexture(uint3 id_in_tile : SV_DispatchThreadID)
     uint2 sampleCoords = id_in_tile.xy;
     uint layerId = id_in_tile.z;
 
-    uint2 apertureIds;
-    uint2 focusIds;
-    uint psfId;
-    uint3 psfIds;
+    float3 apertureIds = ApertureIndices(aperture);
+    float3 focusIds = FocusIndices(focusDistance);
+    uint psfId = psfInterpolationBuffer[layerId + 1];
+    float3 psfIds = LayerIdToPsfIndices(psfId, layerId);
+	
+    uint numTextureLayers = psfInterpolationBuffer[0];
+    if (layerId >= numTextureLayers)
+        return;
+    if (IsSamplePadding(sampleCoords, psfIds))
+        return;
+	
+    float4 textureValue = float4(0.0f, 0.0f, 0.0f, 1.0f);
+    for (uint c = 0; c < 3; c += 1)
+    {
+        float rFrac = LerpPsfRadius(ddx, c);
+        float3 r = float3(floor(rFrac), ceil(rFrac), frac(rFrac));
+        textureValue[c] = SamplePsfWeightBufferPadded(psfIds, apertureIds, focusIds, c, r, sampleCoords);
+    }
+	
+    psfImage[id_in_tile] = textureValue;
 }
 
 
