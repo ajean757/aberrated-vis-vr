@@ -11,8 +11,8 @@ public class AberrationRenderPass : ScriptableRenderPass
 {
     // Defined consts in compute shader
     private const int TILE_SIZE = 16;
-    private const int TILE_MAX_FRAGMENTS = 1024;
-    private const int BOX_BLUR_RADIUS = 16;
+    private const int TILE_MAX_FRAGMENTS = 4096;
+    private const int BOX_BLUR_RADIUS = 4;
 
     // Struct sizes in compute shader
     //private const int TileSplatParamsSize = 2 * 16;
@@ -127,6 +127,20 @@ public class AberrationRenderPass : ScriptableRenderPass
 
     public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
     {
+        // if (tileFragmentCountBuffer != null)
+        // {
+        //     uint[] countBuffer = new uint[numTiles.x * numTiles.y];
+        //     tileFragmentCountBuffer.GetData(countBuffer);
+        //     string str = "cnts: ";
+        //     foreach (var item in countBuffer)
+        //     {
+        //         str += item.ToString() + " ";
+        //     }
+        //     Debug.Log(str);
+        //     Debug.Log(countBuffer[numTiles.x - 1]);
+        //     Debug.Log(countBuffer[2 * numTiles.x - 1]);
+        //     Debug.Log(countBuffer[3 * numTiles.x - 1]);
+        // }
         // uint[] rangeArray = new uint[1024];
         // float[] depthsArray = new float[1024];
         // indicesBuffer.GetData(rangeArray);
@@ -235,51 +249,18 @@ public class AberrationRenderPass : ScriptableRenderPass
 
         using (var builder = renderGraph.AddComputePass("SortFragments", out PassData passData))
         {
-            //BufferHandle indicesBufferHandle = renderGraph.ImportBuffer(indicesBuffer);
-            //BufferHandle depthsBufferHandle = renderGraph.ImportBuffer(depthsBuffer);
-
             passData.cs = cs;
             passData.kernelIndex = sortFragmentsIndex;
             passData.bufferList = new()
             {
                 (tileFragmentCountBufferId, tileFragmentCountHandle, AccessFlags.Read),
                 (tileSortBufferId, tileSortHandle, AccessFlags.ReadWrite),
-                //(Shader.PropertyToID("indices"), indicesBufferHandle, AccessFlags.ReadWrite),
-                //(Shader.PropertyToID("depths"), depthsBufferHandle, AccessFlags.ReadWrite)
             };
             passData.textureList = new();
             passData.threadGroups = new(1, numTiles.x, numTiles.y);
 
             passData.Build(builder);
-            builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) =>
-            {
-                // List<int> range = Enumerable.Range(0, 1024).ToList();
-                // List<float> randomDepths = Enumerable.Range(0, 1024).Select(_ => Random.Range(0.0f, 1.0f)).ToList();
-
-                // Debug.Log("SortFragments Start");
-
-                // string rangeStr;
-                // string depthsStr;
-
-                // rangeStr = "index before running compute shader: ";
-                // foreach (var item in range)
-                // {
-                //     rangeStr += item.ToString() + " ";
-                // }
-
-                // depthsStr = "depths before running compute shader: ";
-                // foreach (var item in randomDepths)
-                // {
-                //     depthsStr += item.ToString() + " ";
-                // }
-                // Debug.Log(rangeStr);
-                // Debug.Log(depthsStr);
-
-                // indicesBuffer.SetData(range);
-                // depthsBuffer.SetData(randomDepths);
-
-                ExecutePass(data, cgContext);
-            });
+            builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
         }
 
         using (var builder = renderGraph.AddComputePass("Convolve", out PassData passData))
@@ -297,12 +278,11 @@ public class AberrationRenderPass : ScriptableRenderPass
                 (oColorId, dst, AccessFlags.Write),
             };
             passData.threadGroups = new Vector3Int(numTiles.x, numTiles.y, 1);
-            //passData.threadGroups = new(Mathf.CeilToInt(cameraData.cameraTargetDescriptor.width / 8), Mathf.CeilToInt(cameraData.cameraTargetDescriptor.height / 8), 1);
 
             passData.Build(builder);
             builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
         }
-
+        resourceData.cameraColor = dst;
 
         // using (var builder = renderGraph.AddComputePass("BlurTest", out PassData passData))
         // {
@@ -320,7 +300,7 @@ public class AberrationRenderPass : ScriptableRenderPass
         //     passData.Build(builder);
         //     builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
         // }
-        resourceData.cameraColor = dst;
+        // resourceData.cameraColor = dst;
 
         // using (var builder = renderGraph.AddComputePass("Convolution", out PassData passData))
         // {
