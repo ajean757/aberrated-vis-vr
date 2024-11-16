@@ -19,7 +19,7 @@ cbuffer TileSplatParams
 
     uint minBlurRadiusCurrent;
     uint maxBlurRadiusCurrent;
-	
+    
     uint numObjectDioptres;
     float objectDioptresMin;
     float objectDioptresMax;
@@ -91,7 +91,7 @@ bool IsValidTileCoord(const uint2 tileCoord)
 
 float3 SphericalCoordinates(const uint2 screenPosition, const float depth)
 {
-	// do something
+    // do something
 }
 
 float ComputePsfIndex(const uint2 screenPosition, const float depth)
@@ -160,13 +160,13 @@ void TileBufferBuild(uint3 id : SV_DispatchThreadID)
 
     const uint2 tileCoord = id.xy / TILE_SIZE;
     const uint2 threadId = id.xy % TILE_SIZE;
-	//const uint2 fragmentCoord = id.xy;
+    //const uint2 fragmentCoord = id.xy;
 
-	//const uint fragmentIndex = FragmentArrayIndex(fragmentCoord);
+    //const uint fragmentIndex = FragmentArrayIndex(fragmentCoord);
     const uint tileIndex = TileArrayIndex(tileCoord);
     const uint countIndex = TileCountArrayIndex(tileCoord);
 
-	//FragmentData fragmentData = fragmentBuffer[fragmentIndex];
+    //FragmentData fragmentData = fragmentBuffer[fragmentIndex];
 
     SortIndex sortIndex;
     sortIndex.fragmentIndex = fragmentIndex;
@@ -191,7 +191,7 @@ void TileBufferSplat(uint3 id : SV_DispatchThreadID)
     const uint countIndex = TileCountArrayIndex(tileCoord);
 
     const FragmentData fragmentData = fragmentBuffer[fragmentIndex];
-	
+    
     SortIndex sortIndex;
     sortIndex.fragmentIndex = fragmentIndex;
     sortIndex.depth = ComputeSortDepth(fragmentData.screenPosition, fragmentData.psfIndex);
@@ -243,7 +243,7 @@ void BlurTest(uint3 id : SV_DispatchThreadID)
         }
     }
     color /= cnt;
-	//color.x = _iDepth[id.xy].x;
+    //color.x = _iDepth[id.xy].x;
     oColor[id.xy] = color;
 }
 
@@ -284,7 +284,7 @@ void SortFragments(uint3 id_in_tile : SV_DispatchThreadID)
                 }
             }
 
-			// roughly equivalent to __syncthreads(), explicitly fences over shared memory only
+            // roughly equivalent to __syncthreads(), explicitly fences over shared memory only
             GroupMemoryBarrierWithGroupSync();
         }
     }
@@ -389,14 +389,14 @@ float LerpPsfRadius(float3 d, uint c)
 
 bool IsSamplePadding(int2 sampleCoords, float3 psfIds)
 {
-	// calculate largest blur radius across all channels
+    // calculate largest blur radius across all channels
     float maxBlurRadius = 0.0f;
     for (int i = 0; i < 3; i += 1)
     {
         float blurRadius = LerpPsfRadius(psfIds, i);
         maxBlurRadius = max(maxBlurRadius, blurRadius);
     }
-	
+    
     int2 lowerLeft = int2(int(maxBlurRadiusCurrent) - maxBlurRadius);
     int2 upperRight = int2(int(maxBlurRadiusCurrent) + maxBlurRadius);
     bool isPadding = any(sampleCoords < lowerLeft) || any(sampleCoords > upperRight);
@@ -405,12 +405,12 @@ bool IsSamplePadding(int2 sampleCoords, float3 psfIds)
 
 // bilinear interpolation
 float lerp2(
-	float f00,
-	float f01,
-	float f10,
-	float f11,
-	float x01,
-	float x10
+    float f00,
+    float f01,
+    float f10,
+    float f11,
+    float x01,
+    float x10
 )
 {
     float a = lerp(f00, f01, x01);
@@ -420,17 +420,17 @@ float lerp2(
 
 // trilinear interpolation
 float lerp3(
-	float f000,
-	float f001,
-	float f010,
-	float f011,
-	float f100,
-	float f101,
-	float f110,
-	float f111,
-	float x001,
-	float x010,
-	float x100
+    float f000,
+    float f001,
+    float f010,
+    float f011,
+    float f100,
+    float f101,
+    float f110,
+    float f111,
+    float x001,
+    float x010,
+    float x100
 )
 {
     float a = lerp2(f000, f001, f010, f011, x001, x010);
@@ -441,9 +441,9 @@ float lerp3(
 uint PsfParamBufferIndex(uint d, uint a, uint f, uint c)
 {
     return d * (3 * numApertures * numFocusDioptres)
-		+ c * (numApertures * numFocusDioptres)
-		+ a * (numFocusDioptres)
-		+ f;
+        + c * (numApertures * numFocusDioptres)
+        + a * (numFocusDioptres)
+        + f;
 }
 
 // closed form sum of (2r+1)^2 for r from a to b (inclusive) 
@@ -477,40 +477,40 @@ float PsfWeight(uint psfParamIdx, uint r, uint2 sc)
 
 float SamplePsfWeightBufferPadded(float3 d, float3 a, float3 f, uint c, uint r, uint2 scp)
 {
-	// remove padding from sample coordinates
+    // remove padding from sample coordinates
     int2 sc = int2(scp) - maxBlurRadiusCurrent + r;
     
-	// determine if we are outside the spatial extent of the PSF entry we are sampling
+    // determine if we are outside the spatial extent of the PSF entry we are sampling
     int2 lowerLeft = int2(0);
     int2 upperRight = int2(2 * r + 1);
     if (any(sc < lowerLeft) || any(sc >= upperRight))
     {
         return 0.0f;
     }
-	
-	// trilinearly interpolate over object distance, aperture diameter, focus distance
+    
+    // trilinearly interpolate over object distance, aperture diameter, focus distance
     return lerp3(
-		PsfWeight(PsfParamBufferIndex((uint) d[0], (uint) a[0], (uint) f[0], c), r, sc),
-		PsfWeight(PsfParamBufferIndex((uint) d[0], (uint) a[0], (uint) f[1], c), r, sc),
-		PsfWeight(PsfParamBufferIndex((uint) d[0], (uint) a[1], (uint) f[0], c), r, sc),
-		PsfWeight(PsfParamBufferIndex((uint) d[0], (uint) a[1], (uint) f[1], c), r, sc),
-		PsfWeight(PsfParamBufferIndex((uint) d[1], (uint) a[0], (uint) f[0], c), r, sc),
-		PsfWeight(PsfParamBufferIndex((uint) d[1], (uint) a[0], (uint) f[1], c), r, sc),
-		PsfWeight(PsfParamBufferIndex((uint) d[1], (uint) a[1], (uint) f[0], c), r, sc),
-		PsfWeight(PsfParamBufferIndex((uint) d[1], (uint) a[1], (uint) f[1], c), r, sc),
-		f[2],
-		a[2],
-		d[2]
-	);
+        PsfWeight(PsfParamBufferIndex((uint) d[0], (uint) a[0], (uint) f[0], c), r, sc),
+        PsfWeight(PsfParamBufferIndex((uint) d[0], (uint) a[0], (uint) f[1], c), r, sc),
+        PsfWeight(PsfParamBufferIndex((uint) d[0], (uint) a[1], (uint) f[0], c), r, sc),
+        PsfWeight(PsfParamBufferIndex((uint) d[0], (uint) a[1], (uint) f[1], c), r, sc),
+        PsfWeight(PsfParamBufferIndex((uint) d[1], (uint) a[0], (uint) f[0], c), r, sc),
+        PsfWeight(PsfParamBufferIndex((uint) d[1], (uint) a[0], (uint) f[1], c), r, sc),
+        PsfWeight(PsfParamBufferIndex((uint) d[1], (uint) a[1], (uint) f[0], c), r, sc),
+        PsfWeight(PsfParamBufferIndex((uint) d[1], (uint) a[1], (uint) f[1], c), r, sc),
+        f[2],
+        a[2],
+        d[2]
+    );
 }
 
 float SamplePsfWeightBufferPadded(float3 d, float3 a, float3 f, uint c, float3 r, uint2 scp)
 {
     return lerp(
-		SamplePsfWeightBufferPadded(d, a, f, c, (uint) r[0], scp),
-		SamplePsfWeightBufferPadded(d, a, f, c, (uint) r[1], scp),
-		r[2]
-	);
+        SamplePsfWeightBufferPadded(d, a, f, c, (uint) r[0], scp),
+        SamplePsfWeightBufferPadded(d, a, f, c, (uint) r[1], scp),
+        r[2]
+    );
 }
 
 // default from Csoba's code
@@ -525,13 +525,13 @@ void InterpolatePSFTexture(uint3 id_in_tile : SV_DispatchThreadID)
     float3 focusIds = FocusIndices(focusDistance);
     uint psfId = psfInterpolationBuffer[layerId + 1];
     float3 psfIds = LayerIdToPsfIndices(psfId, layerId);
-	
+    
     uint numTextureLayers = psfInterpolationBuffer[0];
     if (layerId >= numTextureLayers)
         return;
     if (IsSamplePadding(sampleCoords, psfIds))
         return;
-	
+    
     float4 textureValue = float4(0.0f, 0.0f, 0.0f, 1.0f);
     for (uint c = 0; c < 3; c += 1)
     {
@@ -539,7 +539,7 @@ void InterpolatePSFTexture(uint3 id_in_tile : SV_DispatchThreadID)
         float3 r = float3(floor(rFrac), ceil(rFrac), frac(rFrac));
         textureValue[c] = SamplePsfWeightBufferPadded(psfIds, apertureIds, focusIds, c, r, sampleCoords);
     }
-	
+    
     psfImage[id_in_tile] = textureValue;
 }
 

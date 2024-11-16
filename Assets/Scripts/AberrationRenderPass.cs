@@ -38,9 +38,9 @@ struct PsfParam
 
 /*
 struct InterpolatedPsfParam {
-		uint startLayer;
-		uint numLayers;
-		float blurRadius;
+        uint startLayer;
+        uint numLayers;
+        float blurRadius;
 };
 */
 [StructLayout(LayoutKind.Sequential)]

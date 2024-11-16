@@ -6,16 +6,16 @@ using UnityEngine.Rendering.Universal;
 [AttributeUsage(AttributeTargets.Field, AllowMultiple = false)]
 public class FolderDropdownAttribute : Attribute
 {
-  // You can add parameters to this attribute if needed, e.g., to specify folder paths or other options.
+    // You can add parameters to this attribute if needed, e.g., to specify folder paths or other options.
 }
 
 public class AberrationRendererFeature : ScriptableRendererFeature
 {
     private AberrationSettings settings;
-    
+
     [FolderDropdown]
     public string PSFSet;
-  
+
     //[SerializeField] private Shader shader;
     [SerializeField] private ComputeShader computeShader;
     //private Material material;
