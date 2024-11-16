@@ -31,9 +31,9 @@ public class PSF
     public float blurRadiusDeg; // size of PSF on retina (in degrees)
 
     public int NumWeights()
-		{
+    {
         return weights.Select(x => x.Length).Sum();
-		}
+    }
 }
 
 public struct PSFIndex
@@ -46,14 +46,14 @@ public struct PSFIndex
     public int focus;
 
     public PSFIndex(int objectDepth, int horizontal, int vertical, int lambda, int aperture, int focus)
-		{
+    {
         this.objectDepth = objectDepth;
         this.horizontal = horizontal;
         this.vertical = vertical;
         this.lambda = lambda;
         this.aperture = aperture;
         this.focus = focus;
-		}
+    }
 }
 
 public class PSFStack
@@ -93,7 +93,7 @@ public class PSFStack
             List<float> v = new();
             foreach (string s in floats)
             {
-                v.Add(float.Parse(s));  
+                v.Add(float.Parse(s));
             }
 
             return v;
@@ -149,22 +149,22 @@ public class PSFStack
     }
 
     public PSF GetPSF(PSFIndex index)
-		{
+    {
         return stack[index.objectDepth, index.horizontal, index.vertical, index.lambda, index.aperture, index.focus];
-		}
+    }
 
     public int PSFCount()
-		{
+    {
         return stack.Length;
-		}
+    }
 
     public int InterpolatedPSFCount()
-		{
+    {
         return PSFCount() / (focusDioptres.Count * apertureDiameters.Count);
-		}
+    }
 
     public int TotalWeights()
-		{
+    {
         int totalWeights = 0;
         Action<PSFIndex, PSF> psfWeights = (_, p) =>
         {
@@ -181,16 +181,16 @@ public class PSFStack
 
     // "row-major" (i.e. lower indices have largest strides)
     public int LinearizeIndex(PSFIndex idx)
-		{
+    {
         return idx.objectDepth * (incidentAnglesHorizontal.Count * incidentAnglesVertical.Count * lambdas.Count * apertureDiameters.Count * focusDioptres.Count)
             + idx.horizontal * (incidentAnglesVertical.Count * lambdas.Count * apertureDiameters.Count * focusDioptres.Count)
             + idx.vertical * (lambdas.Count * apertureDiameters.Count * focusDioptres.Count)
             + idx.lambda * (apertureDiameters.Count * focusDioptres.Count)
             + idx.aperture * (focusDioptres.Count)
             + idx.focus;
-		}
+    }
     public void Iterate(Action<PSFIndex, PSF> fn)
-		{
+    {
         for (int i = 0; i < objectDistances.Count; i += 1)
         {
             for (int j = 0; j < incidentAnglesHorizontal.Count; j += 1)
@@ -252,7 +252,7 @@ public class PSFStack
 
             int radius = int.Parse(match.Groups[1].Value);
             int n = 2 * radius + 1;
-            
+
             psf.weights[index] = new float[n, n];
 
             string array = psfFileText.Substring(start, end - start);
