@@ -17,8 +17,10 @@
 #define TILE_MAX_FRAGMENTS 4096
 #define SORT_GROUP_SIZE 1024
 
-#define BOX_BLUR_RADIUS 4
-#define BOX_BLUR_WEIGHT (1.0f / 81.0f) // 1 / (2 * BOX_BLUR_RADIUS + 1)^2
+#define SORT_ELEMENTS_PER_THREAD 2 // TILE_MAX_FRAGMENTS / SORTGROUP_SIZE / 2
+
+#define BOX_BLUR_RADIUS 16
+#define BOX_BLUR_WEIGHT (1.0f / 1089.0f) // 1 / (2 * BOX_BLUR_RADIUS + 1)^2
 
 #define CEIL_DIV(x, y) ((x - 1) / y + 1)
 
@@ -316,27 +318,22 @@ void BlurTest(uint3 id : SV_DispatchThreadID)
 		return;
 	float4 color = float4(0.0, 0.0, 0.0, 1.0);
 	uint cnt = 0;
-	for (int i = -10; i <= 10; i++)
+	for (int i = -BOX_BLUR_RADIUS; i <= BOX_BLUR_RADIUS; i++)
 	{
-		for (int j = -10; j <= 10; j++)
+		for (int j = -BOX_BLUR_RADIUS; j <= BOX_BLUR_RADIUS; j++)
 		{
 			if (id.x + i >= 0 && id.x + i < texWidth && id.y + j >= 0 && id.y + j < texHeight) 
 			{
-				color += iColor[id.xy + int2(i, j)];
+				color += iColor[id.xy + int2(i, j)] * BOX_BLUR_WEIGHT;
 				cnt++;
 			}
 		}
 	}
-	color /= cnt;
-	//color.x = _iDepth[id.xy].x;
 	oColor[id.xy] = color;
 }
 
-//RWStructuredBuffer<uint> indices;
-//RWStructuredBuffer<float> depths;
-
-groupshared uint fragmentIndices[SORT_GROUP_SIZE];
-groupshared float fragmentDepths[SORT_GROUP_SIZE];
+groupshared uint fragmentIndices[TILE_MAX_FRAGMENTS];
+groupshared float fragmentDepths[TILE_MAX_FRAGMENTS];
 
 [numthreads(SORT_GROUP_SIZE,1,1)]
 void SortFragments(uint3 id_dispatch : SV_DispatchThreadID) {
@@ -348,33 +345,47 @@ void SortFragments(uint3 id_dispatch : SV_DispatchThreadID) {
 
 	const uint fragmentCount = tileFragmentCountBuffer[countIndex];
 
-	/* Presort */
-	SortIndex sortIndex = tileSortBuffer[tileIndex + threadId];
-	if (threadId < fragmentCount)
+	/* Read all TILE_MAX_FRAGMENTS while striding */
+	for (uint batchId = 0; batchId < TILE_MAX_FRAGMENTS / SORT_GROUP_SIZE; batchId++)
 	{
-		fragmentIndices[threadId] = sortIndex.fragmentIndex;
-		fragmentDepths[threadId] = sortIndex.depth;
-	}
-	else
-	{
-		//fragmentIndices[threadId] = -1;
-		fragmentDepths[threadId] = FLT_MAX;
+		uint offset = batchId * SORT_GROUP_SIZE + threadId;
+		if (offset < fragmentCount)
+		{
+			SortIndex sortIndex = tileSortBuffer[tileIndex + offset];
+			fragmentIndices[offset] = sortIndex.fragmentIndex;
+			fragmentDepths[offset] = sortIndex.depth;
+		}
+		else
+		{
+			fragmentDepths[offset] = FLT_MAX;
+		}
 	}
 	GroupMemoryBarrierWithGroupSync();
 
-	for (uint k = 2; k <= SORT_GROUP_SIZE; k *= 2) {
-		for (uint j = k / 2; j > 0; j /= 2) {
-			uint i = threadId;
-			uint l = i ^ j;
-			if (l > i) {
-				if (((i & k) == 0 && fragmentDepths[i] > fragmentDepths[l]) || ((i & k) != 0 && fragmentDepths[i] < fragmentDepths[l])) {
-					float ftmp = fragmentDepths[i];
-					fragmentDepths[i] = fragmentDepths[l];
-					fragmentDepths[l] = ftmp;
+	for (uint k = 2; k <= TILE_MAX_FRAGMENTS; k *= 2) 
+	{
+		/* We are alternately sorting groups of size k (blue boxes) */
+		for (uint j = k / 2; j > 0; j /= 2)
+		{
+			/* We are performing swaps with stride j */
+			for (uint batchId = 0; batchId < SORT_ELEMENTS_PER_THREAD; batchId++)
+			{
+				/* We don't have enough threads so each thread is responsible for SORT_ELEMENTS_PER_THREAD swaps */
+				const uint i = batchId * SORT_GROUP_SIZE + threadId;
+				/* Insert a 0 at position defined by j */
+				const uint id1 = i * 2 - ((j - 1) & i);
+				/* Perform the crossover sort if this is the first in the block (orange box) */
+				const uint id2 = id1 ^ (k == 2 * j ? k - 1 : j);
 
-					uint itmp = fragmentIndices[i];
-					fragmentIndices[i] = fragmentIndices[l];
-					fragmentIndices[l] = itmp;
+				if (fragmentDepths[id1] > fragmentDepths[id2])
+				{
+					float ftmp = fragmentDepths[id1];
+					fragmentDepths[id1] = fragmentDepths[id2];
+					fragmentDepths[id2] = ftmp;
+
+					uint itmp = fragmentIndices[id1];
+					fragmentIndices[id1] = fragmentIndices[id2];
+					fragmentIndices[id2] = itmp;
 				}
 			}
 
@@ -383,13 +394,13 @@ void SortFragments(uint3 id_dispatch : SV_DispatchThreadID) {
 		}
 	}
 
-
-
-	if (threadId < fragmentCount)
+	for (batchId = 0; batchId < TILE_MAX_FRAGMENTS / SORT_GROUP_SIZE; batchId++)
 	{
-		sortIndex.fragmentIndex = fragmentIndices[threadId];
-		sortIndex.depth = fragmentDepths[threadId];
-		tileSortBuffer[tileIndex + threadId] = sortIndex;
+		uint offset = batchId * SORT_GROUP_SIZE + threadId;
+		SortIndex sortIndex;
+		sortIndex.fragmentIndex = fragmentIndices[offset];
+		sortIndex.depth = fragmentDepths[offset];
+		tileSortBuffer[tileIndex + offset] = sortIndex;
 	}
 }
 
@@ -417,7 +428,7 @@ void Convolve(uint3 id : SV_DispatchThreadID)
 		fragmentCount = tileFragmentCountBuffer[countIndex];
 	GroupMemoryBarrierWithGroupSync();
 
-	/* Front to back alpha blending using premultiplied alpha */
+	/* Depth sorted alpha blending using premultiplied alpha */
 	float3 result = float3(0, 0, 0);
 	float3 alpha = float3(0, 0, 0);
 
@@ -438,8 +449,14 @@ void Convolve(uint3 id : SV_DispatchThreadID)
 				FragmentData fragmentData = tileFragments[i];
 				float3 weight = SamplePsf(fragmentCoord, fragmentData);
 
-				result += weight * fragmentData.color;
+				/* Regular weighted summation */
+				//result += weight * fragmentData.color;
 
+				/* Back to front alpha blending */
+				result = weight * fragmentData.color + (1.0 - weight) * result;
+				alpha = weight + (1.0 - weight) * alpha;
+
+				/* Front to back alpha blending */
 				// result += (1.0 - alpha) * weight * fragmentData.color;
 				// alpha = weight + (1.0 - weight) * alpha;
 			}
@@ -460,5 +477,5 @@ void Convolve(uint3 id : SV_DispatchThreadID)
 	// 	// alpha = weight + (1.0 - weight) * alpha;
 	// }
 	
-	oColor[fragmentCoord] = float4(result, 1);
+	oColor[fragmentCoord] = float4(result / alpha, 1);
 }
