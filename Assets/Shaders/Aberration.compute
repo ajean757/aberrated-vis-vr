@@ -345,7 +345,7 @@ float3 ApertureIndices(float aperture)
     float frac = (aperture - aperturesMin) / aperturesStep;
     int2 unclampedIndices = int2(floor(frac), ceil(frac));
     int2 clampedIndices = clamp(unclampedIndices, 0, numApertures - 1);
-    return float3(clampedIndices.x, clampedIndices.y, frac);
+    return float3(clampedIndices.x, clampedIndices.y, clamp(frac, 0, numApertures - 1));
 }
 
 float3 FocusIndices(float focusDistance)
@@ -354,7 +354,7 @@ float3 FocusIndices(float focusDistance)
     float frac = (focusDioptres - focusDioptresMin) / focusDioptresStep;
     int2 unclampedIndices = int2(floor(frac), ceil(frac));
     int2 clampedIndices = clamp(unclampedIndices, 0, numFocusDioptres - 1);
-    return float3(clampedIndices.x, clampedIndices.y, frac);
+    return float3(clampedIndices.x, clampedIndices.y, clamp(frac, 0, numFocusDioptres - 1));
 }
 
 // d = object distance index, c = channel index. We assume rank of channel dimension is always 3 (RGB)
@@ -383,8 +383,8 @@ float3 LayerIdToPsfIndices(uint d, uint l)
 float LerpPsfRadius(float3 d, uint c)
 {
     float psfRadius0 = interpolatedPsfParams[PsfParamArrayIndex((uint) d[0], c)].blurRadius;
-    float psfRadius1 = interpolatedPsfParams[PsfParamArrayIndex((uint) d[0], c)].blurRadius;
-    return lerp(psfRadius0, psfRadius1, d[2]);
+    float psfRadius1 = interpolatedPsfParams[PsfParamArrayIndex((uint) d[1], c)].blurRadius;
+    return lerp(psfRadius0, psfRadius1, frac(d[2]));
 }
 
 bool IsSamplePadding(int2 sampleCoords, float3 psfIds)
@@ -500,9 +500,9 @@ float SamplePsfWeightBufferPadded(float3 d, float3 a, float3 f, uint c, uint r, 
         PsfWeight(PsfParamBufferIndex((uint) d[1], (uint) a[0], (uint) f[1], c), r, sc),
         PsfWeight(PsfParamBufferIndex((uint) d[1], (uint) a[1], (uint) f[0], c), r, sc),
         PsfWeight(PsfParamBufferIndex((uint) d[1], (uint) a[1], (uint) f[1], c), r, sc),
-        f[2],
-        a[2],
-        d[2]
+        frac(f[2]),
+        frac(a[2]),
+        frac(d[2])
     );
 }
 
@@ -511,7 +511,7 @@ float SamplePsfWeightBufferPadded(float3 d, float3 a, float3 f, uint c, float3 r
     return lerp(
         SamplePsfWeightBufferPadded(d, a, f, c, (uint) r[0], scp),
         SamplePsfWeightBufferPadded(d, a, f, c, (uint) r[1], scp),
-        r[2]
+        frac(r[2])
     );
 }
 
@@ -520,6 +520,9 @@ float SamplePsfWeightBufferPadded(float3 d, float3 a, float3 f, uint c, float3 r
 [numthreads(INTERPOLATION_GROUP_SIZE, INTERPOLATION_GROUP_SIZE, 1)]
 void InterpolatePSFTexture(uint3 id_in_tile : SV_DispatchThreadID)
 {
+    // psfImage[id_in_tile] = float4(1.0f, 0.0f, 0.0f, 1.0f);
+    // return; 
+
     uint2 sampleCoords = id_in_tile.xy;
     uint layerId = id_in_tile.z;
 
@@ -529,20 +532,48 @@ void InterpolatePSFTexture(uint3 id_in_tile : SV_DispatchThreadID)
     float3 psfIds = LayerIdToPsfIndices(psfId, layerId);
     
     uint numTextureLayers = psfInterpolationBuffer[0];
-    if (layerId >= numTextureLayers)
+    if (layerId >= numTextureLayers) {
+        // psfImage[id_in_tile] = float4(1.0f, 0.0f, 0.0f, 1.0f);
         return;
-    if (IsSamplePadding(sampleCoords, psfIds))
+    }
+        
+    if (IsSamplePadding(sampleCoords, psfIds)) {
+        // psfImage[id_in_tile] = float4(0.0f, 1.0f, 0.0f, 1.0f);
         return;
+    }
+    
+    // psfImage[id_in_tile] = float4(focusIds[0], focusIds[1], focusIds[2], 1.0f);
+    // return;
     
     float4 textureValue = float4(0.0f, 0.0f, 0.0f, 1.0f);
     for (uint c = 0; c < 3; c += 1)
     {
         float rFrac = LerpPsfRadius(psfIds, c);
-        float3 r = float3(floor(rFrac), ceil(rFrac), frac(rFrac));
+        // textureValue[c] = rFrac;
+        float3 r = float3(floor(rFrac), ceil(rFrac), rFrac);
         textureValue[c] = SamplePsfWeightBufferPadded(psfIds, apertureIds, focusIds, c, r, sampleCoords);
     }
     
     psfImage[id_in_tile] = textureValue;
+    
+}
+
+// PSF texture sampling code
+SamplerState PsfTextureSampler
+{
+    Filter = MIN_MAG_MIP_LINEAR;
+    AddressU = Clamp;
+    AddressV = Clamp;
+    AddressW = Clamp;
+};
+
+float3 SamplePsf(const uint2 fragmentCoord, const FragmentData fragmentData)
+{
+    float3 texCoordIndices = float3(fragmentCoord.x, fragmentCoord.y, fragmentData.psfIndex);
+    uint width, height, depth;
+    psfTexture.GetDimensions(width, height, depth);
+    float3 texCoords = (texCoordIndices + float3(0.5f, 0.5f, 0.5f)) / float3(width, height, depth);
+    return psfTexture.Sample(PsfTextureSampler, texCoords).rgb;
 }
 
 

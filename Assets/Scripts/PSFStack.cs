@@ -17,6 +17,9 @@ public class PSF
     // jagged multidimensional array
     public float[][,] weights;
 
+    // unscaled weights (in "retina-space")
+    public float[,] rawWeights;
+
     // Parameters at which this PSF was evaluated
     public float objectDioptre;
     public float incidentAngleHorizontal;
@@ -25,14 +28,220 @@ public class PSF
     public float apertureDiameter;
     public float focusDioptre;
 
-    // PSF parameters for runtime interpolation
+    // "derived" PSF parameters for runtime interpolation
     public int minBlurRadius;
     public int maxBlurRadius;
     public float blurRadiusDeg; // size of PSF on retina (in degrees)
-
     public int NumWeights()
     {
         return weights.Select(x => x.Length).Sum();
+    }
+
+    // Compute derived parameters + rescale the PSFs to match render resolution + vertical FOV
+    // input parameters: idx - index of this PSF, stack - PSF stack, vfov - vertical FOV, yres - vertical resolution in pixels
+    public void CreateScaledWeights(PSFIndex idx, PSFStack stack, float vfov, int yres)
+    {
+        // Csoba reference: blurRadiusLimitsEntry, arePsfsSameOrNeighbors
+        // Essentially, we have a canonical size (from projecting blurRadiusDeg of this PSF)
+        // but we might need to interpolate with "neighboring" PSF
+        // i.e. those which differ by at most 1 in each index
+        // so find min / max of the blur radius of all of these, then rescale the raw weights to those sizes
+        // TODO: is this a reasonable way to do things?
+        int minRadius = int.MaxValue;
+        int maxRadius = int.MinValue;
+        for (int i = -1; i <= 1; i += 1)
+        {
+            for (int j = -1; j <= 1; j += 1)
+            {
+                for (int k = -1; k <= 1; k += 1)
+                {
+                    PSFIndex neighborIdx = new(
+                        idx.objectDepth + i,
+                        idx.horizontal, // on-axis, so only 1 value
+                        idx.vertical, // see above
+                        idx.lambda, // never interpolate between wavelengths (channels)
+                        idx.aperture + j,
+                        idx.focus + k
+                    );
+
+                    if (!stack.ValidPSFIndex(neighborIdx))
+                        continue;
+
+                    PSF neighborPSF = stack.GetPSF(neighborIdx);
+                    float blurRadiusPx = (neighborPSF.blurRadiusDeg / vfov) * yres;
+                    minRadius = Mathf.Min(minRadius, Mathf.FloorToInt(blurRadiusPx));
+                    maxRadius = Mathf.Max(maxRadius, Mathf.CeilToInt(blurRadiusPx));
+                }
+            }
+        }
+
+        minBlurRadius = minRadius;
+        maxBlurRadius = maxRadius;
+        weights = new float[maxRadius - minRadius + 1][,];
+        for (int i = minRadius; i <= maxRadius; i += 1)
+        {
+            int j = i - minRadius;
+            int diameter = 2 * i + 1;
+            weights[j] = new float[diameter, diameter];
+            weights[j] = ResizeArea(rawWeights, diameter);
+
+            // renormalize
+            float sum = 0.0f;
+            for (int a = 0; a < weights[j].GetLength(0); a += 1)
+                for (int b = 0; b < weights[j].GetLength(1); b += 1)
+                    sum += weights[j][a, b];
+            for (int a = 0; a < weights[j].GetLength(0); a += 1)
+                for (int b = 0; b < weights[j].GetLength(1); b += 1)
+                    weights[j][a, b] /= sum;
+        }
+
+        static float[,] Resize(float[,] inputMatrix, int newSize)
+        {
+            int oldSizeRows = inputMatrix.GetLength(0); // number of rows in input matrix
+            int oldSizeCols = inputMatrix.GetLength(1); // number of columns in input matrix
+
+            if (oldSizeRows != oldSizeCols)
+                throw new ArgumentException("Input matrix must be square.");
+
+            if (newSize == 0)
+            {
+                throw new ArgumentException("0 size output");
+            }
+            else if (newSize == 1)
+            {
+                return new float[1, 1] { { 1.0f } };
+            }
+            int oldSize = oldSizeRows;
+
+            float[,] outputMatrix = new float[newSize, newSize];
+
+            // Calculate the scaling factor between the old and new sizes
+            float scale = (float)(oldSize - 1) / (newSize - 1);
+
+            for (int i = 0; i < newSize; i++)
+            {
+                // Map the output pixel's row coordinate to the input matrix
+                float y = i * scale;
+                int y0 = (int)Math.Floor(y);
+                int y1 = y0 + 1;
+                if (y1 >= oldSize)
+                    y1 = y0;
+                float ty = y - y0;
+
+                for (int j = 0; j < newSize; j++)
+                {
+                    // Map the output pixel's column coordinate to the input matrix
+                    float x = j * scale;
+                    int x0 = (int)Math.Floor(x);
+                    int x1 = x0 + 1;
+                    if (x1 >= oldSize)
+                        x1 = x0;
+                    float tx = x - x0;
+
+                    // Retrieve the four neighboring values from the input matrix
+                    float c00 = inputMatrix[y0, x0];
+                    float c10 = inputMatrix[y0, x1];
+                    float c01 = inputMatrix[y1, x0];
+                    float c11 = inputMatrix[y1, x1];
+
+                    // Compute the interpolated value using bilinear interpolation formula
+                    float value = (1 - tx) * (1 - ty) * c00 +
+                                  tx * (1 - ty) * c10 +
+                                  (1 - tx) * ty * c01 +
+                                  tx * ty * c11;
+
+                    outputMatrix[i, j] = value;
+                }
+            }
+
+            return outputMatrix;
+        }
+
+        static float[,] ResizeArea(float[,] inputMatrix, int newSize)
+        {
+            int oldSize = inputMatrix.GetLength(0);
+
+            if (oldSize != inputMatrix.GetLength(1))
+                throw new ArgumentException("Input matrix must be square.");
+
+            if (newSize == oldSize)
+            {
+                // Return a copy of the input matrix
+                float[,] x = new float[newSize, newSize];
+                Array.Copy(inputMatrix, x, inputMatrix.Length);
+                return x;
+            }
+
+            float[,] outputMatrix = new float[newSize, newSize];
+            float scale = (float)oldSize / newSize;
+
+            if (newSize < oldSize)
+            {
+                // Downsampling
+                for (int i = 0; i < newSize; i++)
+                {
+                    float y0 = i * scale;
+                    float y1 = (i + 1) * scale;
+
+                    int yStart = (int)Math.Floor(y0);
+                    int yEnd = (int)Math.Ceiling(y1) - 1;
+                    if (yEnd >= oldSize) yEnd = oldSize - 1;
+
+                    for (int j = 0; j < newSize; j++)
+                    {
+                        float x0 = j * scale;
+                        float x1 = (j + 1) * scale;
+
+                        int xStart = (int)Math.Floor(x0);
+                        int xEnd = (int)Math.Ceiling(x1) - 1;
+                        if (xEnd >= oldSize) xEnd = oldSize - 1;
+
+                        float sum = 0f;
+                        float totalArea = 0f;
+
+                        for (int y = yStart; y <= yEnd; y++)
+                        {
+                            for (int x = xStart; x <= xEnd; x++)
+                            {
+                                // Compute overlap area between input pixel and output pixel area
+                                float xOverlap = Math.Min(x1, x + 1) - Math.Max(x0, x);
+                                float yOverlap = Math.Min(y1, y + 1) - Math.Max(y0, y);
+
+                                if (xOverlap > 0 && yOverlap > 0)
+                                {
+                                    float area = xOverlap * yOverlap;
+                                    sum += inputMatrix[y, x] * area;
+                                    totalArea += area;
+                                }
+                            }
+                        }
+
+                        outputMatrix[i, j] = sum / totalArea;
+                    }
+                }
+            }
+            else
+            {
+                // Upsampling
+                for (int i = 0; i < newSize; i++)
+                {
+                    float y = (i + 0.5f) * scale - 0.5f;
+                    int ySrc = (int)Math.Round(y);
+                    ySrc = Math.Min(Math.Max(ySrc, 0), oldSize - 1);
+
+                    for (int j = 0; j < newSize; j++)
+                    {
+                        float x = (j + 0.5f) * scale - 0.5f;
+                        int xSrc = (int)Math.Round(x);
+                        xSrc = Math.Min(Math.Max(xSrc, 0), oldSize - 1);
+
+                        outputMatrix[i, j] = inputMatrix[ySrc, xSrc];
+                    }
+                }
+            }
+
+            return outputMatrix;
+        }
     }
 }
 
@@ -82,6 +291,7 @@ public class PSFStack
     public float apertureDiametersStep;
     public float focusDioptresStep;
 
+    #region IO
     public void ReadPsfStack(string psfSetName)
     {
         string psfStackFilename = Path.Combine(psfSetName, "psfstack");
@@ -152,6 +362,59 @@ public class PSFStack
         }
     }
 
+    void ReadPsfFile(string psfSetName, int[] indices)
+    {
+        // format:
+        // [0] Object depth;
+        // [1] Horizontal axis;
+        // [2] Vertical axis;
+        // [3] Wavelength;
+        // [4] Aperture diameter;
+        // [5] Focus distance;
+        PSF psf = GetPSF(indices);
+        string filename = $"{indices[0]}-{indices[1]}-{indices[2]}-{indices[3]}-{indices[4]}-{indices[5]}.psf";
+        string path = Path.Combine(psfSetName, filename);
+        path = path.Replace(Path.DirectorySeparatorChar, '/');
+        string psfFileText = File.ReadAllText(path);
+
+        MatchCollection matches = Regex.Matches(psfFileText, @"Radius: (\d+)\r?\n");
+        psf.weights = new float[matches.Count][,];
+
+        psf.objectDioptre = objectDioptres[indices[0]];
+        psf.incidentAngleHorizontal = incidentAnglesHorizontal[indices[1]];
+        psf.incidentAngleVertical = incidentAnglesVertical[indices[2]];
+        psf.lambda = lambdas[indices[3]];
+        psf.apertureDiameter = apertureDiameters[indices[4]];
+        psf.focusDioptre = focusDioptres[indices[5]];
+        psf.blurRadiusDeg = float.Parse(Regex.Match(psfFileText, @"Blur Radius: (.*) \(degs\)").Groups[1].Value);
+
+        // Read in raw weights
+        Match psfSizeMatch = Regex.Match(psfFileText, @"Unscaled PSF size: (\d+)");
+        int n = int.Parse(psfSizeMatch.Groups[1].Value);
+        int start = psfSizeMatch.Index + psfSizeMatch.Length;
+        int end = psfFileText.Length;
+        psf.rawWeights = new float[n, n];
+
+        string array = psfFileText.Substring(start, end - start);
+        string[] rows = array.Split(new string[] { "\n", "\r\n" }, System.StringSplitOptions.RemoveEmptyEntries);
+
+        int i = 0;
+        foreach (string row in rows)
+        {
+            int j = 0;
+            string[] cols = row.Split(' ', System.StringSplitOptions.RemoveEmptyEntries);
+            foreach (string value in cols)
+            {
+                psf.rawWeights[i, j] = float.Parse(value);
+                j += 1;
+            }
+            i += 1;
+        }
+    }
+
+    #endregion
+
+    #region Accessors / Utility functions
     public PSF GetPSF(int[] indices)
     {
         return stack[indices[0], indices[1], indices[2], indices[3], indices[4], indices[5]];
@@ -171,6 +434,16 @@ public class PSFStack
     {
         return PSFCount() / (focusDioptres.Count * apertureDiameters.Count);
     }
+
+    public bool ValidPSFIndex(PSFIndex index)
+        {
+        return (index.objectDepth >= 0 && index.objectDepth < objectDistances.Count) &&
+            (index.horizontal >= 0 && index.horizontal < incidentAnglesHorizontal.Count) &&
+            (index.vertical >= 0 && index.vertical < incidentAnglesVertical.Count) &&
+            (index.lambda >= 0 && index.lambda < lambdas.Count) &&
+            (index.aperture >= 0 && index.aperture < apertureDiameters.Count) &&
+            (index.focus >= 0 && index.focus < focusDioptres.Count);
+        }
 
     public int TotalWeights()
     {
@@ -222,67 +495,15 @@ public class PSFStack
             }
         }
     }
-
-    void ReadPsfFile(string psfSetName, int[] indices)
+    #endregion
+    
+    // see CreateScaledWeights
+    public void ComputeScaledPSFs(float vfov, int yres)
     {
-        // format:
-        // [0] Object depth;
-        // [1] Horizontal axis;
-        // [2] Vertical axis;
-        // [3] Wavelength;
-        // [4] Aperture diameter;
-        // [5] Focus distance;
-        PSF psf = GetPSF(indices);
-        string filename = $"{indices[0]}-{indices[1]}-{indices[2]}-{indices[3]}-{indices[4]}-{indices[5]}.psf";
-        string path = Path.Combine(psfSetName, filename);
-        path = path.Replace(Path.DirectorySeparatorChar, '/');
-        string psfFileText = File.ReadAllText(path);
-
-        MatchCollection matches = Regex.Matches(psfFileText, @"Radius: (\d+)\r?\n");
-        psf.weights = new float[matches.Count][,];
-
-        psf.objectDioptre = objectDioptres[indices[0]];
-        psf.incidentAngleHorizontal = incidentAnglesHorizontal[indices[1]];
-        psf.incidentAngleVertical = incidentAnglesVertical[indices[2]];
-        psf.lambda = lambdas[indices[3]];
-        psf.apertureDiameter = apertureDiameters[indices[4]];
-        psf.focusDioptre = focusDioptres[indices[5]];
-
-        psf.minBlurRadius = matches.Cast<Match>().Select(x => int.Parse(x.Groups[1].Value)).Min();
-        psf.maxBlurRadius = matches.Cast<Match>().Select(x => int.Parse(x.Groups[1].Value)).Max();
-        psf.blurRadiusDeg = float.Parse(Regex.Match(psfFileText, @"Blur Radius: (.*) \(degs\)").Groups[1].Value);
-
-        int index = 0;
-        foreach (Match match in matches)
+        Iterate((idx, psf) =>
         {
-            int start = match.Index + match.Length;
-            Match next = match.NextMatch();
-            int end = next.Success ? next.Index : psfFileText.Length;
-
-            int radius = int.Parse(match.Groups[1].Value);
-            int n = 2 * radius + 1;
-
-            psf.weights[index] = new float[n, n];
-
-            string array = psfFileText.Substring(start, end - start);
-            string[] rows = array.Split(new string[] { "\n", "\r\n" }, System.StringSplitOptions.RemoveEmptyEntries);
-
-
-            int i = 0;
-            foreach (string row in rows)
-            {
-                int j = 0;
-                string[] cols = row.Split(' ', System.StringSplitOptions.RemoveEmptyEntries);
-                foreach (string value in cols)
-                {
-                    psf.weights[index][i, j] = float.Parse(value);
-                    j += 1;
-                }
-                i += 1;
-            }
-
-            index += 1;
-        }
+            psf.CreateScaledWeights(idx, this, vfov, yres);
+        });
     }
 }
 
