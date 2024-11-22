@@ -46,8 +46,8 @@ public class PlayerLocomotion : MonoBehaviour
     // Handle rotation input
     Vector2 turnInput = turnAction.ReadValue<Vector2>();
 
-    Debug.Log("Turning: " + turnInput.ToString());
-    Debug.Log("Translation: " + moveInput.ToString());
+    // Debug.Log("Turning: " + turnInput.ToString());
+    // Debug.Log("Translation: " + moveInput.ToString());
 
     if (turnInput != Vector2.zero)
     {
