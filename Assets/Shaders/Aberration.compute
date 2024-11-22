@@ -397,8 +397,10 @@ bool IsSamplePadding(int2 sampleCoords, float3 psfIds)
         maxBlurRadius = max(maxBlurRadius, blurRadius);
     }
     
-    int2 lowerLeft = int2(int(maxBlurRadiusCurrent) - maxBlurRadius);
-    int2 upperRight = int2(int(maxBlurRadiusCurrent) + maxBlurRadius);
+    int lowerLeftXY = int(maxBlurRadiusCurrent) - maxBlurRadius;
+    int upperRightXY = int(maxBlurRadiusCurrent) + maxBlurRadius;
+    int2 lowerLeft = int2(lowerLeftXY, lowerLeftXY);
+    int2 upperRight = int2(upperRightXY, upperRightXY);
     bool isPadding = any(sampleCoords < lowerLeft) || any(sampleCoords > upperRight);
     return isPadding;
 }
@@ -481,8 +483,8 @@ float SamplePsfWeightBufferPadded(float3 d, float3 a, float3 f, uint c, uint r, 
     int2 sc = int2(scp) - maxBlurRadiusCurrent + r;
     
     // determine if we are outside the spatial extent of the PSF entry we are sampling
-    int2 lowerLeft = int2(0);
-    int2 upperRight = int2(2 * r + 1);
+    int2 lowerLeft = int2(0, 0);
+    int2 upperRight = int2(2 * r + 1, 2 * r + 1);
     if (any(sc < lowerLeft) || any(sc >= upperRight))
     {
         return 0.0f;
@@ -535,7 +537,7 @@ void InterpolatePSFTexture(uint3 id_in_tile : SV_DispatchThreadID)
     float4 textureValue = float4(0.0f, 0.0f, 0.0f, 1.0f);
     for (uint c = 0; c < 3; c += 1)
     {
-        float rFrac = LerpPsfRadius(ddx, c);
+        float rFrac = LerpPsfRadius(psfIds, c);
         float3 r = float3(floor(rFrac), ceil(rFrac), frac(rFrac));
         textureValue[c] = SamplePsfWeightBufferPadded(psfIds, apertureIds, focusIds, c, r, sampleCoords);
     }
