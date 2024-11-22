@@ -12,7 +12,7 @@ public class AberrationRenderPass : ScriptableRenderPass
     // Defined consts in compute shader
     private const int TILE_SIZE = 16;
     private const int TILE_MAX_FRAGMENTS = 4096;
-    private const int BOX_BLUR_RADIUS = 16;
+    private const int BOX_BLUR_RADIUS = 8;
 
     // Struct sizes in compute shader
     private const int FragmentDataSize = 7 * sizeof(float);
@@ -109,24 +109,24 @@ public class AberrationRenderPass : ScriptableRenderPass
 
     public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
     {
-        // if (tileFragmentCountBuffer != null)
-        // {
-        //     uint[] countBuffer = new uint[numTiles.x * numTiles.y];
-        //     tileFragmentCountBuffer.GetData(countBuffer);
-        //     string str = "cnts: ";
-        //     foreach (var item in countBuffer)
-        //     {
-        //         str += item.ToString() + " ";
-        //     }
-        //     Debug.Log(str);
-        // }
+/*				if (tileFragmentCountBuffer != null)
+				{
+				    uint[] countBuffer = new uint[numTiles.x * numTiles.y];
+				    tileFragmentCountBuffer.GetData(countBuffer);
+				    string str = "cnts: ";
+				    foreach (var item in countBuffer)
+				    {
+				        str += item.ToString() + " ";
+				    }
+				    Debug.Log(str);
+				}*/
 
-        // if (tileSortBuffer != null)
-        // {
-        //     PrintSortIndexBuffer(new Vector2Int(20, 20));
-        // }
-        
-        UniversalResourceData resourceData = frameData.Get<UniversalResourceData>();
+				// if (tileSortBuffer != null)
+				// {
+				//     PrintSortIndexBuffer(new Vector2Int(20, 20));
+				// }
+
+				UniversalResourceData resourceData = frameData.Get<UniversalResourceData>();
 
         UniversalCameraData cameraData = frameData.Get<UniversalCameraData>();
 
@@ -150,8 +150,8 @@ public class AberrationRenderPass : ScriptableRenderPass
         // Update cbuffer values
         if (resolution != new Vector2Int(cameraData.cameraTargetDescriptor.width, cameraData.cameraTargetDescriptor.height))
         {
-            Debug.Log("Resolution changed");
             resolution = new Vector2Int(cameraData.cameraTargetDescriptor.width, cameraData.cameraTargetDescriptor.height);
+            Debug.Log("Resolution changed to " + resolution.ToString());
             numTiles = new Vector2Int((resolution.x - 1) / TILE_SIZE + 1, (resolution.y - 1) / TILE_SIZE + 1);
             cs.SetInts(resolutionId, new[] { resolution.x, resolution.y });
             cs.SetInts(numTilesId, new[] { numTiles.x, numTiles.y });

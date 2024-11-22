@@ -19,8 +19,8 @@
 
 #define SORT_ELEMENTS_PER_THREAD 2 // TILE_MAX_FRAGMENTS / SORTGROUP_SIZE / 2
 
-#define BOX_BLUR_RADIUS 16
-#define BOX_BLUR_WEIGHT (1.0f / 1089.0f) // 1 / (2 * BOX_BLUR_RADIUS + 1)^2
+#define BOX_BLUR_RADIUS 8
+#define BOX_BLUR_WEIGHT (1.0f / 289.0f) // 1 / (2 * BOX_BLUR_RADIUS + 1)^2
 
 #define CEIL_DIV(x, y) ((x - 1) / y + 1)
 
