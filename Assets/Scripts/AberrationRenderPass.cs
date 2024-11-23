@@ -560,6 +560,44 @@ public class AberrationRenderPass : ScriptableRenderPass
         if (resolution.x == 0 || resolution.y == 0 || !srcCamColor.IsValid() || !dst.IsValid())
             return;
 
+        BufferHandle psfWeightsHandle = renderGraph.ImportBuffer(psfWeightsBuffer);
+        BufferHandle psfParamsHandle = renderGraph.ImportBuffer(psfParamsBuffer);
+        BufferHandle interpolatedPsfParamsHandle = renderGraph.ImportBuffer(interpolatedPsfParamsBuffer);
+        BufferHandle psfInterpolationHandle = renderGraph.ImportBuffer(psfInterpolationBuffer);
+
+        RTHandle psfImageRTHandle = RTHandles.Alloc(psfTexture);
+        TextureHandle psfImageHandle = renderGraph.ImportTexture(psfImageRTHandle);
+
+        using (var builder = renderGraph.AddComputePass("InterpolatePSFTexture", out PassData passData))
+        {
+            passData.cs = cs;
+            passData.kernelIndex = interpolatePsfTextureIndex;
+            passData.bufferList = new()
+            {
+                    (psfWeightsBufferId, psfWeightsHandle, AccessFlags.Read),
+                    (psfParamsBufferId, psfParamsHandle, AccessFlags.Read),
+                    (interpolatedPsfParamsBufferId, interpolatedPsfParamsHandle, AccessFlags.Read),
+                    (psfInterpolationBufferId, psfInterpolationHandle, AccessFlags.Read),
+            };
+            passData.textureList = new()
+            {
+                (psfImageId, psfImageHandle, AccessFlags.Write)
+            };
+
+            int maxBlurRadiusCurrent = minMaxBlurRadiusCurrent[1];
+            int RoundedDiv(int a, int b)
+            {
+                return Mathf.CeilToInt((float)a / (float)b);
+            }
+
+            int xyGroups = RoundedDiv(2 * maxBlurRadiusCurrent + 1, 8);
+            int numLayers = psfTexture.volumeDepth;
+            passData.threadGroups = new Vector3Int(xyGroups, xyGroups, numLayers);
+
+            passData.Build(builder);
+            builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
+        }
+
         BufferHandle fragmentHandle = renderGraph.ImportBuffer(fragmentBuffer);
         BufferHandle tileFragmentCountHandle = renderGraph.ImportBuffer(tileFragmentCountBuffer);
         BufferHandle tileSortHandle = renderGraph.ImportBuffer(tileSortBuffer);
@@ -627,9 +665,12 @@ public class AberrationRenderPass : ScriptableRenderPass
                 (fragmentBufferId, fragmentHandle, AccessFlags.Read),
                 (tileFragmentCountBufferId, tileFragmentCountHandle, AccessFlags.Read),
                 (tileSortBufferId, tileSortHandle, AccessFlags.Read),
+
+                (interpolatedPsfParamsBufferId, interpolatedPsfParamsHandle, AccessFlags.Read),
             };
             passData.textureList = new()
             {
+                (psfTextureId, psfImageHandle, AccessFlags.Read),
                 (oColorId, dst, AccessFlags.Write),
             };
             passData.threadGroups = new Vector3Int(numTiles.x, numTiles.y, 1);
@@ -637,43 +678,7 @@ public class AberrationRenderPass : ScriptableRenderPass
             passData.Build(builder);
             builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
         }
-        BufferHandle psfWeightsHandle = renderGraph.ImportBuffer(psfWeightsBuffer);
-        BufferHandle psfParamsHandle = renderGraph.ImportBuffer(psfParamsBuffer);
-        BufferHandle interpolatedPsfParamsHandle = renderGraph.ImportBuffer(interpolatedPsfParamsBuffer);
-        BufferHandle psfInterpolationHandle = renderGraph.ImportBuffer(psfInterpolationBuffer);
-
-        RTHandle psfImageRTHandle = RTHandles.Alloc(psfTexture);
-        TextureHandle psfImageHandle = renderGraph.ImportTexture(psfImageRTHandle);
-
-        using (var builder = renderGraph.AddComputePass("InterpolatePSFTexture", out PassData passData))
-        {
-            passData.cs = cs;
-            passData.kernelIndex = interpolatePsfTextureIndex;
-            passData.bufferList = new()
-            {
-                    (psfWeightsBufferId, psfWeightsHandle, AccessFlags.Read),
-                    (psfParamsBufferId, psfParamsHandle, AccessFlags.Read),
-                    (interpolatedPsfParamsBufferId, interpolatedPsfParamsHandle, AccessFlags.Read),
-                    (psfInterpolationBufferId, psfInterpolationHandle, AccessFlags.Read),
-            };
-            passData.textureList = new()
-            {
-                (psfImageId, psfImageHandle, AccessFlags.Write)
-            };
-
-            int maxBlurRadiusCurrent = minMaxBlurRadiusCurrent[1];
-            int RoundedDiv(int a, int b)
-            {
-                return Mathf.CeilToInt((float)a / (float)b);
-            }
-
-            int xyGroups = RoundedDiv(2 * maxBlurRadiusCurrent + 1, 8);
-            int numLayers = psfTexture.volumeDepth;
-            passData.threadGroups = new Vector3Int(xyGroups, xyGroups, numLayers);
-
-            passData.Build(builder);
-            builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
-        }
+        
         resourceData.cameraColor = dst;
     }
 
