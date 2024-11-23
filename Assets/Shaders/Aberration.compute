@@ -357,6 +357,15 @@ float3 FocusIndices(float focusDistance)
     return float3(clampedIndices.x, clampedIndices.y, clamp(frac, 0, numFocusDioptres - 1));
 }
 
+float3 ObjectIndices(float objectDistance) 
+{
+    float objectDioptres = 1.0f / objectDistance;
+    float frac = (objectDioptres - objectDioptresMin) / objectDioptresStep;
+    int2 unclampedIndices = int2(floor(frac), ceil(frac));
+    int2 clampedIndices = clamp(unclampedIndices, 0, numObjectDioptres - 1);
+    return float3(clampedIndices.x, clampedIndices.y, clamp(frac, 0, numObjectDioptres - 1));
+}
+
 // d = object distance index, c = channel index. We assume rank of channel dimension is always 3 (RGB)
 uint PsfParamArrayIndex(uint d, uint c)
 {
@@ -515,8 +524,12 @@ float SamplePsfWeightBufferPadded(float3 d, float3 a, float3 f, uint c, float3 r
     );
 }
 
+
 // default from Csoba's code
 #define INTERPOLATION_GROUP_SIZE 8
+
+// Interpolate PSFs to squeeze away the aperture diameter / focus distance dimensions, and also rearrange data into a 3D texture so that
+// we can utilize hardware texture samplers to get good performance
 [numthreads(INTERPOLATION_GROUP_SIZE, INTERPOLATION_GROUP_SIZE, 1)]
 void InterpolatePSFTexture(uint3 id_in_tile : SV_DispatchThreadID)
 {
@@ -567,19 +580,64 @@ SamplerState PsfTextureSampler
     AddressW = Clamp;
 };
 
+/*
+// Transform depth to PSF index
+vec3 sphericalCoordsToPsfIndex(const vec3 sphericalCoords)
+{
+    // Get the corresponding PSF index
+	const vec3 psfIds = objectDistanceIndices(sphericalCoords.z);
+
+    // Maximum PSF sizes
+    const uint maxPsfRadius = sTiledSplatBlurData.uiMaxBlurRadiusCurrent;
+    const uint maxPsfDiameter = maxPsfRadius * 2 + 1;
+
+    // Return the texture layer
+    return vec3(maxPsfRadius, maxPsfRadius, psfIndexToLayerId(psfIds));
+}
+
+// converts the input psf index to the corresponding layer ID
+float psfIndexToLayerId(const vec3 d)
+{
+	// Get the first layer and the number of layers
+	const uint idx = psfParamArrayIndex(uint(d[0]), 0);
+	const float startLayer = float(sInterpolatedPsfParamBuffer[idx].uiStartLayer);
+	const float numLayers = float(sInterpolatedPsfParamBuffer[idx].uiNumLayers);
+
+    // Return the texture layer
+    return startLayer + numLayers * fract(d[2]);
+}
+*/
+
+// Note that vPsfIndex is containing depth at beginning, then only gets converted to dioptres at the end of tile_buffer_build
+// Our tile buffer build is less complex, so we just keep it as depth all the way through until we need to sample
+// Csoba reference: sphericalCoordsToPsfIndex (above)
+float RealPsfIndex(float psfIndex) {
+    // psfIndex = depth
+    float3 psfIds = ObjectIndices(psfIndex);
+    // psfIds = index into object dioptres
+
+    // layers info stored in R channel only
+    uint idx = PsfParamArrayIndex((uint) psfIds[0], 0);
+    float startLayer = (float) interpolatedPsfParams[idx].startLayer;
+    float numLayers = (float) interpolatedPsfParams[idx].numLayers;
+
+    return startLayer + numLayers * frac(psfIds[2]);
+}
+
 float3 SamplePsf(const uint2 fragmentCoord, const FragmentData fragmentData)
 {
-    float3 texCoordIndices = float3(fragmentCoord.x, fragmentCoord.y, fragmentData.psfIndex);
+    // PSFs are centered in 3D texture
+    uint maxPsfRadius = maxBlurRadiusCurrent;
+    float psfIndex = RealPsfIndex(fragmentData.psfIndex);
+    float3 texCoordIndices = float3(fragmentCoord.x + maxPsfRadius, fragmentCoord.y + maxPsfRadius, psfIndex);
+    
     uint width, height, depth;
     psfTexture.GetDimensions(width, height, depth);
+    
+    // offset by half-texel since we want to sample exactly at the center of pixel
     float3 texCoords = (texCoordIndices + float3(0.5f, 0.5f, 0.5f)) / float3(width, height, depth);
     return psfTexture.Sample(PsfTextureSampler, texCoords).rgb;
 }
-
-
-// Interpolate PSFs to squeeze away the aperture diameter / focus distance dimensions, and also rearrange data into a 3D texture so that
-// we can utilize hardware texture samplers to get good performance
-
 
 
 // // Perform convolution
