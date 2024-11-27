@@ -8,6 +8,7 @@ using System.Runtime.InteropServices;
 using System.Linq;
 using System;
 using Unity.Mathematics;
+using UnityEngine.Experimental.Rendering;
 
 
 /*
@@ -611,6 +612,8 @@ public class AberrationRenderPass : ScriptableRenderPass
                 (fragmentBufferId, fragmentHandle, AccessFlags.Write),
                 (tileFragmentCountBufferId, tileFragmentCountHandle, AccessFlags.Write),
                 (tileSortBufferId, tileSortHandle, AccessFlags.Write),
+
+                (interpolatedPsfParamsBufferId, interpolatedPsfParamsHandle, AccessFlags.Read)
             };
             passData.textureList = new()
             {
@@ -655,7 +658,7 @@ public class AberrationRenderPass : ScriptableRenderPass
             passData.Build(builder);
             builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
         }
-
+        
         using (var builder = renderGraph.AddComputePass("Convolve", out PassData passData))
         {
             passData.cs = cs;
@@ -679,6 +682,25 @@ public class AberrationRenderPass : ScriptableRenderPass
             builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
         }
         
+        /*
+        using (var builder = renderGraph.AddComputePass("BlurTest", out PassData passData))
+        {
+            passData.cs = cs;
+            passData.kernelIndex = blurTestIndex;
+            passData.bufferList = new();
+            passData.textureList = new()
+            {
+                (iColorId, srcCamColor, AccessFlags.Read),
+                (oColorId, dst, AccessFlags.Write),
+                (iDepthId, srcCamDepth, AccessFlags.Read),
+            };
+            passData.threadGroups = new(Mathf.CeilToInt(cameraData.cameraTargetDescriptor.width / 8), Mathf.CeilToInt(cameraData.cameraTargetDescriptor.height / 8), 1);
+        
+            passData.Build(builder);
+            builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
+        }
+        */
+
         resourceData.cameraColor = dst;
     }
 
