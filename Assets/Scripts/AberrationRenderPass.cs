@@ -95,6 +95,14 @@ public class AberrationRenderPass : ScriptableRenderPass
 
     private static readonly int apertureId = Shader.PropertyToID("aperture");
     private static readonly int focusDistanceId = Shader.PropertyToID("focusDistance");
+    private static readonly int nearClipId = Shader.PropertyToID("nearClip");
+    private static readonly int farClipId = Shader.PropertyToID("farClip");
+    private static readonly int cameraPositionId = Shader.PropertyToID("cameraPosition");
+    private static readonly int farLowerLeftId = Shader.PropertyToID("farLowerLeft");
+    private static readonly int farUpperLeftId = Shader.PropertyToID("farUpperLeft");
+    private static readonly int farUpperRightId = Shader.PropertyToID("farUpperRight");
+    private static readonly int farLowerRightId = Shader.PropertyToID("farLowerRight");
+
 
     // Kernels (initialized in constructor)
     private readonly int tileBufferBuildIndex;
@@ -174,6 +182,24 @@ public class AberrationRenderPass : ScriptableRenderPass
         // TODO: this should be user-adjustable using some nice UI, or should maybe dynamically adjust based on scene conditions
         cs.SetFloat(apertureId, 5.0f);
         cs.SetFloat(focusDistanceId, 8.0f);
+
+        // Set pinhole camera parameters
+        // TODO: we will need to adjust this part for stereoscopic rendering also
+        // since each eye actually has different render frustum
+        cs.SetFloat(nearClipId, Camera.main.nearClipPlane);
+        cs.SetFloat(farClipId, Camera.main.farClipPlane);
+
+        Vector3 cameraPosition = Camera.main.transform.position;
+        cs.SetFloats(cameraPositionId, cameraPosition[0], cameraPosition[1], cameraPosition[2]);
+        
+        Vector3[] corners = new Vector3[4]; // lower left, upper left, upper right, lower right
+        Camera.main.CalculateFrustumCorners(new Rect(0, 0, 1, 1), Camera.main.farClipPlane, Camera.MonoOrStereoscopicEye.Mono, corners);
+
+        cs.SetFloats(farLowerLeftId, corners[0][0], corners[0][1], corners[0][2]);
+        cs.SetFloats(farUpperLeftId, corners[1][0], corners[1][1], corners[1][2]);
+        cs.SetFloats(farUpperRightId, corners[2][0], corners[2][1], corners[2][2]);
+        cs.SetFloats(farLowerRightId, corners[3][0], corners[3][1], corners[3][2]);
+
 
         // Set min / max blur radius parameters - these are dependent on resolution / vertical field of view
         // TODO: the numbers we are getting from Csoba are only at one particular resolution / vfov (already in screen space), 

@@ -53,6 +53,16 @@ cbuffer CameraData
 {
     float aperture;
     float focusDistance;
+    
+    // pinhole camera parameters (clipping planes + frustum extents; near is not necessarily needed at the moment)
+    float nearClip;
+    float farClip;
+    
+    float3 cameraPosition; // world-space
+    float3 farLowerLeft; // view-space
+    float3 farUpperLeft;
+    float3 farUpperRight;
+    float3 farLowerRight;
 };
 
 struct FragmentData
@@ -117,7 +127,9 @@ float3 ApertureIndices(float aperture)
 {
     float frac = (aperture - aperturesMin) / aperturesStep;
     int2 unclampedIndices = int2(floor(frac), ceil(frac));
-    int2 clampedIndices = clamp(unclampedIndices, 0, numApertures - 1);
+    int2 low = int2(0, 0);
+    int2 high = int2(numApertures - 1, numApertures - 1);
+    int2 clampedIndices = clamp(unclampedIndices, low, high);
     return float3(clampedIndices.x, clampedIndices.y, clamp(frac, 0, numApertures - 1));
 }
 
@@ -126,7 +138,9 @@ float3 FocusIndices(float focusDistance)
     float focusDioptres = 1.0f / focusDistance;
     float frac = (focusDioptres - focusDioptresMin) / focusDioptresStep;
     int2 unclampedIndices = int2(floor(frac), ceil(frac));
-    int2 clampedIndices = clamp(unclampedIndices, 0, numFocusDioptres - 1);
+    int2 low = int2(0, 0);
+    int2 high = int2(numFocusDioptres - 1, numFocusDioptres - 1);
+    int2 clampedIndices = clamp(unclampedIndices, low, high);
     return float3(clampedIndices.x, clampedIndices.y, clamp(frac, 0, numFocusDioptres - 1));
 }
 
@@ -135,7 +149,9 @@ float3 ObjectIndices(float objectDistance)
     float objectDioptres = 1.0f / objectDistance;
     float frac = (objectDioptres - objectDioptresMin) / objectDioptresStep;
     int2 unclampedIndices = int2(floor(frac), ceil(frac));
-    int2 clampedIndices = clamp(unclampedIndices, 0, numObjectDioptres - 1);
+    int2 low = int2(0, 0);
+    int2 high = int2(numObjectDioptres - 1, numObjectDioptres - 1);
+    int2 clampedIndices = clamp(unclampedIndices, low, high);
     return float3(clampedIndices.x, clampedIndices.y, clamp(frac, 0, numObjectDioptres - 1));
 }
 
@@ -444,7 +460,15 @@ float LinearEyeDepth(float rawdepth)
 
 float ComputePsfIndex(const uint2 screenPosition, const float depth)
 {
-    return LinearEyeDepth(depth);
+    // depth buffer only provides distance along camera view direction, we have to take into account xy screen position ourselves
+    float zDistance = LinearEyeDepth(depth);
+    float2 interp = float2((float) screenPosition.x / (float) resolution.x, (float) screenPosition.y / (float) resolution.y);
+    
+    float3 a = lerp(farLowerLeft, farLowerRight, interp.xxx);
+    float3 b = lerp(farUpperLeft, farUpperRight, interp.xxx);
+    float3 c = lerp(a, b, interp.yyy);
+    
+    return (zDistance / farClip) * length(c);
 }
 
 float3 BlurRadii(float depth, uint channel)
@@ -846,7 +870,7 @@ void Convolve(uint3 id : SV_DispatchThreadID)
                 FragmentData fragmentData = tileFragments[i];
                 // if (all(uint2(fragmentData.screenPosition.x, fragmentData.screenPosition.y) == fragmentCoord))
                 // {
-                //     oColor[fragmentCoord] = float4(ObjectIndices(fragmentData.psfIndex), 1.0f);
+                //     oColor[fragmentCoord] = float4(fragmentData.psfIndex, fragmentData.psfIndex, fragmentData.psfIndex, 1.0f);
                 //     break;
                 // }
                 float3 weight = SamplePsf(fragmentCoord, fragmentData);
