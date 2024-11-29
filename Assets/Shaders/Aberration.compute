@@ -439,8 +439,8 @@ float3 SphericalCoordinates(const uint2 screenPosition, const float depth)
 
 float LinearEyeDepth(float rawdepth)
 {
-    float NearClip = 0.3;
-    float FarClip = 1000;
+    float NearClip = nearClip;
+    float FarClip = farClip;
 
     float x, y, z, w;
 #if SHADER_API_METAL || SHADER_API_D3D11_9X || SHADER_API_D3D11
@@ -462,6 +462,7 @@ float ComputePsfIndex(const uint2 screenPosition, const float depth)
 {
     // depth buffer only provides distance along camera view direction, we have to take into account xy screen position ourselves
     float zDistance = LinearEyeDepth(depth);
+    
     float2 interp = float2((float) screenPosition.x / (float) resolution.x, (float) screenPosition.y / (float) resolution.y);
     
     float3 a = lerp(farLowerLeft, farLowerRight, interp.xxx);
@@ -556,7 +557,12 @@ void TileBufferBuild(uint3 id : SV_DispatchThreadID)
     fragmentData.color = color;
     fragmentData.screenPosition = float2(fragmentCoord);
     fragmentData.psfIndex = ComputePsfIndex(fragmentCoord, depth);
-    fragmentData.blurRadius = MaxBlurRadii(fragmentData.psfIndex).z;
+    fragmentData.blurRadius = ceil(MaxBlurRadii(fragmentData.psfIndex).z);
+    
+    if (any(fragmentCoord != resolution / 2))
+    {
+        fragmentData.color = float3(0.0f, 0.0f, 0.0f);
+    }
 
     fragmentBuffer[fragmentIndex] = fragmentData;
 
@@ -903,6 +909,12 @@ void Convolve(uint3 id : SV_DispatchThreadID)
     // 	// alpha = weight + (1.0 - weight) * alpha;
     // }
     
-    oColor[fragmentCoord] = float4(result / alpha, 1);
+    // clear screen before writing over
+    oColor[fragmentCoord] = float4(0.0f, 0.0f, 0.0f, 1.0f);
+    if (any(result != 0.0f))
+    {
+        oColor[fragmentCoord] = float4(result * 1e4, 1.0f);
+    }
+    // oColor[fragmentCoord] = float4(result / alpha, 1);
 }
 
