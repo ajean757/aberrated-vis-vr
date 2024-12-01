@@ -559,10 +559,11 @@ void TileBufferBuild(uint3 id : SV_DispatchThreadID)
     fragmentData.psfIndex = ComputePsfIndex(fragmentCoord, depth);
     fragmentData.blurRadius = ceil(MaxBlurRadii(fragmentData.psfIndex).z);
     
-    if (any(fragmentCoord != resolution / 2))
-    {
-        fragmentData.color = float3(0.0f, 0.0f, 0.0f);
-    }
+    // if (any(fragmentCoord != resolution / 2))
+    // {
+    //     fragmentData.color = float3(0.0f, 0.0f, 0.0f);
+    //     fragmentData.blurRadius = 1.0f;
+    // }
 
     fragmentBuffer[fragmentIndex] = fragmentData;
 
@@ -758,12 +759,14 @@ void SortFragments(uint3 id_dispatch : SV_DispatchThreadID) {
 
 // PSF texture sampling code
 // https://discussions.unity.com/t/compute-shader-samplerstate/490835 - Unity imposes strict naming convention, even in compute shaders
+// furthermore, it seems it doesn't even respect the parameters set below, only those from within C#
 SamplerState samplerpsfTexture
 {
     Filter = MIN_MAG_MIP_LINEAR;
-    AddressU = Clamp;
-    AddressV = Clamp;
-    AddressW = Clamp;
+    AddressU = Border;
+    AddressV = Border;
+    AddressW = Border;
+    BorderColor = float4(0.0f, 0.0f, 0.0f, 1.0f);
 };
 
 /*
@@ -822,7 +825,16 @@ float3 SamplePsf(const uint2 fragmentCoord, const FragmentData fragmentData)
     
     // offset by half-texel since we want to sample exactly at the center of pixel
     float3 texCoords = (texCoordIndices + float3(0.5f, 0.5f, 0.5f)) / float3(width, height, depth);
-    return psfTexture.SampleLevel(samplerpsfTexture, texCoords, 0).rgb;
+    
+    // have to implement CLAMP_TO_BORDER ourselves since Unity does not support this texture wrap mode
+    if (any(texCoords < 0.0f) || any(texCoords > 1.0f))
+    {
+        return float3(0.0f, 0.0f, 0.0f);
+    }
+    else
+    {
+        return psfTexture.SampleLevel(samplerpsfTexture, texCoords, 0).rgb;
+    }
 }
 
 groupshared FragmentData tileFragments[SHARED_ARRAY_SIZE];
@@ -913,7 +925,7 @@ void Convolve(uint3 id : SV_DispatchThreadID)
     oColor[fragmentCoord] = float4(0.0f, 0.0f, 0.0f, 1.0f);
     if (any(result != 0.0f))
     {
-        oColor[fragmentCoord] = float4(result * 1e4, 1.0f);
+        oColor[fragmentCoord] = float4(result / alpha, 1.0f);
     }
     // oColor[fragmentCoord] = float4(result / alpha, 1);
 }
