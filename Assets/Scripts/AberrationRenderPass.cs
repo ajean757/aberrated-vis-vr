@@ -151,6 +151,7 @@ public class AberrationRenderPass : ScriptableRenderPass
     private static readonly int psfImageId = Shader.PropertyToID("psfImage");
     private static readonly int psfTextureId = Shader.PropertyToID("psfTexture");
     private RenderTexture psfTexture;
+    private bool psfTextureDirty = false;
     public RenderTexture GetPsfTexture()
     {
         return psfTexture;
@@ -176,7 +177,15 @@ public class AberrationRenderPass : ScriptableRenderPass
         // read in PSFs
         psfStack = new();
         psfStack.ReadPsfStack(defaultSettings.PSFSet);
-        psfStack.ComputeScaledPSFs(Camera.main.fieldOfView, 720); // TODO: need to recalculate upon resolution change
+
+        // run initialization code w/ dummy value to ensure all buffers are set up before any rendering happens
+        OnResolutionChanged(new Vector2Int(1280, 720));
+    }
+
+    // this is separate from resolution change because we might want to change aperture / focus without changing resolution
+    void RecalculatePSFTexture()
+    {
+        psfStack.ComputeScaledPSFs(Camera.main.fieldOfView, resolution.y);
 
         // Set aperture diameter / focus distance uniforms - default is 5 mm pupil size focused at 8 m (optical infinity) away
         // TODO: this should be user-adjustable using some nice UI, or should maybe dynamically adjust based on scene conditions
@@ -191,7 +200,7 @@ public class AberrationRenderPass : ScriptableRenderPass
 
         Vector3 cameraPosition = Camera.main.transform.position;
         cs.SetFloats(cameraPositionId, cameraPosition[0], cameraPosition[1], cameraPosition[2]);
-        
+
         Vector3[] corners = new Vector3[4]; // lower left, upper left, upper right, lower right
         Camera.main.CalculateFrustumCorners(new Rect(0, 0, 1, 1), Camera.main.farClipPlane, Camera.MonoOrStereoscopicEye.Mono, corners);
 
@@ -202,10 +211,7 @@ public class AberrationRenderPass : ScriptableRenderPass
 
 
         // Set min / max blur radius parameters - these are dependent on resolution / vertical field of view
-        // TODO: the numbers we are getting from Csoba are only at one particular resolution / vfov (already in screen space), 
-        // ideally we have "retina-space" PSFs so we can do the conversion on the fly ourselves
-        // This limitation means we are locked into 1280*720, 60deg vertical FOV for accurate simulation
-        int2 blurRadiusLimits = BlurRadiusLimits(new(1280, 720));
+        int2 blurRadiusLimits = BlurRadiusLimits(new(resolution.x, resolution.y));
         minMaxBlurRadiusCurrent = blurRadiusLimits;
         cs.SetInt(minBlurRadiusCurrentId, blurRadiusLimits[0]);
         cs.SetInt(maxBlurRadiusCurrentId, blurRadiusLimits[1]);
@@ -224,6 +230,12 @@ public class AberrationRenderPass : ScriptableRenderPass
         cs.SetFloat(focusDioptresMaxId, psfStack.focusDioptres.Max());
         cs.SetFloat(focusDioptresStepId, psfStack.focusDioptresStep);
 
+        // Free old buffers, PSF texture if necessary
+        psfParamsBuffer?.Release();
+        psfWeightsBuffer?.Release();
+        interpolatedPsfParamsBuffer?.Release();
+        psfInterpolationBuffer?.Release();
+        psfTexture?.Release();
 
         // Create Buffers for PSF interpolation
         int psfParamStructSize = Marshal.SizeOf<PsfParam>();
@@ -423,7 +435,7 @@ public class AberrationRenderPass : ScriptableRenderPass
         uint[] csPsfInterpolationBuffer = CreatePsfInterpolationBuffer(csInterpolatedPsfParamsBuffer);
         psfInterpolationBuffer.SetData(csPsfInterpolationBuffer);
 
-        int numSlices = CalculateNumSlices(psfStack, new(1280, 720), 60.0f);
+        int numSlices = CalculateNumSlices(psfStack, new(resolution.x, resolution.y), Camera.main.fieldOfView);
         psfTexture = new RenderTexture(blurRadiusLimits[1] * 2 + 1, blurRadiusLimits[1] * 2 + 1, 0, RenderTextureFormat.ARGBFloat)
         {
             enableRandomWrite = true,
@@ -438,6 +450,28 @@ public class AberrationRenderPass : ScriptableRenderPass
         {
             Debug.LogError("Unable to create 3D PSF texture");
         }
+
+        psfTextureDirty = true;
+    }
+
+    void OnResolutionChanged(Vector2Int newResolution)
+    {
+        resolution = newResolution;
+        Debug.Log("Resolution changed to " + resolution.ToString());
+        numTiles = new Vector2Int((resolution.x - 1) / TILE_SIZE + 1, (resolution.y - 1) / TILE_SIZE + 1);
+        cs.SetInts(resolutionId, new[] { resolution.x, resolution.y });
+        cs.SetInts(numTilesId, new[] { numTiles.x, numTiles.y });
+
+        // Resize buffers when resolution changes
+        fragmentBuffer?.Release();
+        tileFragmentCountBuffer?.Release();
+        tileSortBuffer?.Release();
+
+        fragmentBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, resolution.x * resolution.y, FragmentDataSize);
+        tileFragmentCountBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numTiles.x * numTiles.y, TileFragmentCountSize);
+        tileSortBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numTiles.x * numTiles.y * TILE_MAX_FRAGMENTS, SortIndexSize);
+
+        RecalculatePSFTexture();
     }
 
     float BlurRadiusPixels(float blurRadiusDeg, int2 resolution, float fovy)
@@ -564,23 +598,10 @@ public class AberrationRenderPass : ScriptableRenderPass
         // Update the blur settings in the material
         UpdateAberrationSettings();
 
-        // Update cbuffer values
+        // Update cbuffer values + recalculate PSF texture
         if (resolution != new Vector2Int(cameraData.cameraTargetDescriptor.width, cameraData.cameraTargetDescriptor.height))
         {
-            resolution = new Vector2Int(cameraData.cameraTargetDescriptor.width, cameraData.cameraTargetDescriptor.height);
-            Debug.Log("Resolution changed to " + resolution.ToString());
-            numTiles = new Vector2Int((resolution.x - 1) / TILE_SIZE + 1, (resolution.y - 1) / TILE_SIZE + 1);
-            cs.SetInts(resolutionId, new[] { resolution.x, resolution.y });
-            cs.SetInts(numTilesId, new[] { numTiles.x, numTiles.y });
-
-            // Resize buffers when resolution changes
-            fragmentBuffer?.Release();
-            tileFragmentCountBuffer?.Release();
-            tileSortBuffer?.Release();
-
-            fragmentBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, resolution.x * resolution.y, FragmentDataSize);
-            tileFragmentCountBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numTiles.x * numTiles.y, TileFragmentCountSize);
-            tileSortBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numTiles.x * numTiles.y * TILE_MAX_FRAGMENTS, SortIndexSize);
+            OnResolutionChanged(new Vector2Int(cameraData.cameraTargetDescriptor.width, cameraData.cameraTargetDescriptor.height));
         }
 
         // This check is to avoid an error from the material preview in the scene
@@ -595,34 +616,39 @@ public class AberrationRenderPass : ScriptableRenderPass
         RTHandle psfImageRTHandle = RTHandles.Alloc(psfTexture);
         TextureHandle psfImageHandle = renderGraph.ImportTexture(psfImageRTHandle);
 
-        using (var builder = renderGraph.AddComputePass("InterpolatePSFTexture", out PassData passData))
+        if (psfTextureDirty)
         {
-            passData.cs = cs;
-            passData.kernelIndex = interpolatePsfTextureIndex;
-            passData.bufferList = new()
+            using (var builder = renderGraph.AddComputePass("InterpolatePSFTexture", out PassData passData))
+            {
+                passData.cs = cs;
+                passData.kernelIndex = interpolatePsfTextureIndex;
+                passData.bufferList = new()
             {
                     (psfWeightsBufferId, psfWeightsHandle, AccessFlags.Read),
                     (psfParamsBufferId, psfParamsHandle, AccessFlags.Read),
                     (interpolatedPsfParamsBufferId, interpolatedPsfParamsHandle, AccessFlags.Read),
                     (psfInterpolationBufferId, psfInterpolationHandle, AccessFlags.Read),
             };
-            passData.textureList = new()
+                passData.textureList = new()
             {
                 (psfImageId, psfImageHandle, AccessFlags.Write)
             };
 
-            int maxBlurRadiusCurrent = minMaxBlurRadiusCurrent[1];
-            int RoundedDiv(int a, int b)
-            {
-                return Mathf.CeilToInt((float)a / (float)b);
+                int maxBlurRadiusCurrent = minMaxBlurRadiusCurrent[1];
+                int RoundedDiv(int a, int b)
+                {
+                    return Mathf.CeilToInt((float)a / (float)b);
+                }
+
+                int xyGroups = RoundedDiv(2 * maxBlurRadiusCurrent + 1, 8);
+                int numLayers = psfTexture.volumeDepth;
+                passData.threadGroups = new Vector3Int(xyGroups, xyGroups, numLayers);
+
+                passData.Build(builder);
+                builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
             }
 
-            int xyGroups = RoundedDiv(2 * maxBlurRadiusCurrent + 1, 8);
-            int numLayers = psfTexture.volumeDepth;
-            passData.threadGroups = new Vector3Int(xyGroups, xyGroups, numLayers);
-
-            passData.Build(builder);
-            builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
+            psfTextureDirty = false;
         }
 
         BufferHandle fragmentHandle = renderGraph.ImportBuffer(fragmentBuffer);
