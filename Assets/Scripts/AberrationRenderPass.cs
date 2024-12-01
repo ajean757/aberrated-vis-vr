@@ -152,6 +152,9 @@ public class AberrationRenderPass : ScriptableRenderPass
     private static readonly int psfTextureId = Shader.PropertyToID("psfTexture");
     private RenderTexture psfTexture;
     private bool psfTextureDirty = false;
+
+    private static readonly int psfTextureLayerExtentsId = Shader.PropertyToID("psfTextureLayerExtents");
+    private GraphicsBuffer psfTextureLayerExtentsBuffer;
     public RenderTexture GetPsfTexture()
     {
         return psfTexture;
@@ -236,6 +239,7 @@ public class AberrationRenderPass : ScriptableRenderPass
         interpolatedPsfParamsBuffer?.Release();
         psfInterpolationBuffer?.Release();
         psfTexture?.Release();
+        psfTextureLayerExtentsBuffer?.Release();
 
         // Create Buffers for PSF interpolation
         int psfParamStructSize = Marshal.SizeOf<PsfParam>();
@@ -446,6 +450,42 @@ public class AberrationRenderPass : ScriptableRenderPass
             filterMode = FilterMode.Bilinear
         };
 
+        psfTextureLayerExtentsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numSlices, sizeof(uint));
+        psfTextureLayerExtentsBuffer.name = "PSF Texture Layer Extents";
+
+        uint[] CreatePsfTextureLayerExtentsBuffer(InterpolatedPsfParam[] interpolatedPsfParams, uint[] psfInterpolationBuffer, int numLayers)
+        {
+            uint[] psfTextureLayerExtents = new uint[numLayers];
+            for (int layerId = 0; layerId < numLayers; layerId += 1)
+            {
+                uint psfId = psfInterpolationBuffer[layerId + 1];
+                uint idx = psfId * 3 + 0;
+                uint s = interpolatedPsfParams[idx].startLayer;
+                uint n = interpolatedPsfParams[idx].numLayers;
+                float psfIdx = psfId + (float)(layerId - s) / (float)(n);
+                int lowerPsfIdx = Mathf.FloorToInt(psfIdx);
+                int upperPsfIdx = Mathf.CeilToInt(psfIdx);
+                lowerPsfIdx = Mathf.Clamp(lowerPsfIdx, 0, psfStack.objectDioptres.Count - 1);
+                upperPsfIdx = Mathf.Clamp(upperPsfIdx, 0, psfStack.objectDioptres.Count - 1);
+
+                float maxBlurRadius = 0.0f;
+                for (int c = 0; c < 3; c += 1)
+                {
+                    float psfRadius0 = interpolatedPsfParams[lowerPsfIdx * 3 + c].blurRadius;
+                    float psfRadius1 = interpolatedPsfParams[upperPsfIdx * 3 + c].blurRadius;
+                    float lerped = Mathf.Lerp(psfRadius0, psfRadius1, psfIdx - (float)lowerPsfIdx);
+                    maxBlurRadius = Mathf.Max(maxBlurRadius, lerped);
+                }
+
+                int textureLayerExtent = Mathf.CeilToInt(maxBlurRadius);
+                Debug.Log("layer: " + layerId + ", texture extent: " + textureLayerExtent);
+                psfTextureLayerExtents[layerId] = (uint)textureLayerExtent;
+            }
+            return psfTextureLayerExtents;
+        }
+        uint[] csPsfTextureLayerExtentsBuffer = CreatePsfTextureLayerExtentsBuffer(csInterpolatedPsfParamsBuffer, csPsfInterpolationBuffer, numSlices);
+        psfTextureLayerExtentsBuffer.SetData(csPsfTextureLayerExtentsBuffer);
+
         if (!psfTexture.Create())
         {
             Debug.LogError("Unable to create 3D PSF texture");
@@ -612,6 +652,7 @@ public class AberrationRenderPass : ScriptableRenderPass
         BufferHandle psfParamsHandle = renderGraph.ImportBuffer(psfParamsBuffer);
         BufferHandle interpolatedPsfParamsHandle = renderGraph.ImportBuffer(interpolatedPsfParamsBuffer);
         BufferHandle psfInterpolationHandle = renderGraph.ImportBuffer(psfInterpolationBuffer);
+        BufferHandle psfTextureLayerExtentsHandle = renderGraph.ImportBuffer(psfTextureLayerExtentsBuffer);
 
         RTHandle psfImageRTHandle = RTHandles.Alloc(psfTexture);
         TextureHandle psfImageHandle = renderGraph.ImportTexture(psfImageRTHandle);
@@ -722,6 +763,7 @@ public class AberrationRenderPass : ScriptableRenderPass
                 (tileSortBufferId, tileSortHandle, AccessFlags.Read),
 
                 (interpolatedPsfParamsBufferId, interpolatedPsfParamsHandle, AccessFlags.Read),
+                (psfTextureLayerExtentsId, psfTextureLayerExtentsHandle, AccessFlags.Read),
             };
             passData.textureList = new()
             {

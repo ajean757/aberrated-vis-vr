@@ -123,6 +123,9 @@ StructuredBuffer<uint> psfInterpolationBuffer; // note: 1-indexed, 0th entry con
 RWTexture3D<float4> psfImage;
 Texture3D<float4> psfTexture;
 
+// a small optimization to reduce # of texture fetches; cull away fetches to parts of PSF texture we know must be black
+StructuredBuffer<uint> psfTextureLayerExtents;
+
 float3 ApertureIndices(float aperture)
 {
     float frac = (aperture - aperturesMin) / aperturesStep;
@@ -250,7 +253,7 @@ uint PsfParamBufferIndex(uint d, uint a, uint f, uint c)
 // apparently calculated using Mathematica
 uint WeightOffset(int a, int b)
 {
-    return (a - 4 * a * a * a + (1 + b) * (1 + 2 * b) * (3 + 2 * b)) / 3;
+    return uint(a - 4 * a * a * a + (1 + b) * (1 + 2 * b) * (3 + 2 * b)) / 3;
 }
 
 uint PsfWeightBufferIndex(uint psfParamIdx, uint r, uint minR, uint2 sc)
@@ -818,6 +821,17 @@ float3 SamplePsf(const uint2 fragmentCoord, const FragmentData fragmentData)
     // PSFs are centered in 3D texture
     uint maxPsfRadius = maxBlurRadiusCurrent;
     float psfIndex = RealPsfIndex(fragmentData.psfIndex);
+    
+    int2 delta = int2(fragmentCoord.x - fragmentData.screenPosition.x, fragmentCoord.y - fragmentData.screenPosition.y);
+    uint lowerLayerExtent = psfTextureLayerExtents[floor(psfIndex)];
+    uint upperLayerExtent = psfTextureLayerExtents[ceil(psfIndex)];
+    uint maxExtent = max(lowerLayerExtent, upperLayerExtent);
+    
+    if (any(abs(delta) > int2(maxExtent, maxExtent)))
+    {
+        return float3(0.0f, 0.0f, 0.0f);
+    }
+    
     float3 texCoordIndices = float3(fragmentCoord.x - fragmentData.screenPosition.x + maxPsfRadius, fragmentCoord.y - fragmentData.screenPosition.y + maxPsfRadius, psfIndex);
     
     uint width, height, depth;
@@ -834,6 +848,7 @@ float3 SamplePsf(const uint2 fragmentCoord, const FragmentData fragmentData)
     else
     {
         return psfTexture.SampleLevel(samplerpsfTexture, texCoords, 0).rgb;
+
     }
 }
 
