@@ -6,6 +6,8 @@ public class PlayerLocomotion : MonoBehaviour
     public InputActionAsset actionAsset; // Drag your InputAction asset here
     public float moveSpeed = 2f; // Adjust movement speed as needed
     public float rotationSpeed = 100f; // Adjust rotation speed as needed
+    public float pitchClampMin = -90f; // Minimum pitch (looking down limit)
+    public float pitchClampMax = 90f;  // Maximum pitch (looking up limit)
 
     private InputAction moveAction;
     private InputAction turnAction;
@@ -46,15 +48,13 @@ public class PlayerLocomotion : MonoBehaviour
         // Handle rotation input
         Vector2 turnInput = turnAction.ReadValue<Vector2>();
 
-        // Debug.Log("Turning: " + turnInput.ToString());
-        // Debug.Log("Translation: " + moveInput.ToString());
-
         if (turnInput != Vector2.zero)
         {
             // Horizontal rotation (yaw)
             float yaw = turnInput.x * rotationSpeed * Time.deltaTime;
 
             pitch -= turnInput.y * rotationSpeed * Time.deltaTime;
+            pitch = Mathf.Clamp(pitch, pitchClampMin, pitchClampMax);
 
             // Apply both yaw and pitch to the transform
             transform.localRotation = Quaternion.Euler(pitch, transform.localEulerAngles.y + yaw, 0);
