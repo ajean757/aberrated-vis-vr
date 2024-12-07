@@ -186,9 +186,9 @@ public class AberrationRenderPass : ScriptableRenderPass
     }
 
     // this is separate from resolution change because we might want to change aperture / focus without changing resolution
-    void RecalculatePSFTexture()
+    void RecalculatePSFTexture(Vector2Int newResolution)
     {
-        psfStack.ComputeScaledPSFs(Camera.main.fieldOfView, resolution.y);
+        psfStack.ComputeScaledPSFs(Camera.main.fieldOfView, newResolution.y);
 
         // Set aperture diameter / focus distance uniforms - default is 5 mm pupil size focused at 8 m (optical infinity) away
         // TODO: this should be user-adjustable using some nice UI, or should maybe dynamically adjust based on scene conditions
@@ -214,7 +214,7 @@ public class AberrationRenderPass : ScriptableRenderPass
 
 
         // Set min / max blur radius parameters - these are dependent on resolution / vertical field of view
-        int2 blurRadiusLimits = BlurRadiusLimits(new(resolution.x, resolution.y));
+        int2 blurRadiusLimits = BlurRadiusLimits(new(newResolution.x, newResolution.y));
         minMaxBlurRadiusCurrent = blurRadiusLimits;
         cs.SetInt(minBlurRadiusCurrentId, blurRadiusLimits[0]);
         cs.SetInt(maxBlurRadiusCurrentId, blurRadiusLimits[1]);
@@ -370,7 +370,7 @@ public class AberrationRenderPass : ScriptableRenderPass
                         fracFocus
                     );
 
-                    float interpolatedBlurRadiusPx = BlurRadiusPixels(interpolatedBlurRadius, new(1280, 720), 60.0f);
+                    float interpolatedBlurRadiusPx = BlurRadiusPixels(interpolatedBlurRadius, new(newResolution.x, newResolution.y), Camera.main.fieldOfView);
 
                     interpolatedPsfParams[i] = new(0, 0, interpolatedBlurRadiusPx);
                     i += 1;
@@ -478,7 +478,7 @@ public class AberrationRenderPass : ScriptableRenderPass
                 }
 
                 int textureLayerExtent = Mathf.CeilToInt(maxBlurRadius);
-                Debug.Log("layer: " + layerId + ", texture extent: " + textureLayerExtent);
+                // Debug.Log("layer: " + layerId + ", texture extent: " + textureLayerExtent);
                 psfTextureLayerExtents[layerId] = (uint)textureLayerExtent;
             }
             return psfTextureLayerExtents;
@@ -511,7 +511,7 @@ public class AberrationRenderPass : ScriptableRenderPass
         tileFragmentCountBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numTiles.x * numTiles.y, TileFragmentCountSize);
         tileSortBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numTiles.x * numTiles.y * TILE_MAX_FRAGMENTS, SortIndexSize);
 
-        RecalculatePSFTexture();
+        RecalculatePSFTexture(newResolution);
     }
 
     float BlurRadiusPixels(float blurRadiusDeg, int2 resolution, float fovy)

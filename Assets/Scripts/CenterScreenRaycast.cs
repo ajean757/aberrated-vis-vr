@@ -65,7 +65,7 @@ public class CenterScreenRaycast : MonoBehaviour
                 Destroy(currentHitMarker);
             }
         }
-        computeShader.SetFloat("_CenterScreenDepth", GetCurrentDepth());
+        // computeShader.SetFloat("_CenterScreenDepth", GetCurrentDepth());
 
     }
 }
