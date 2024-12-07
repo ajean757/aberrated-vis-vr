@@ -63,8 +63,8 @@ struct InterpolatedPsfParam
 public class AberrationRenderPass : ScriptableRenderPass
 {
     // Defined consts in compute shader
-    private const int TILE_SIZE = 16;
-    private const int TILE_MAX_FRAGMENTS = 4096;
+    private const int TILE_SIZE = 8;
+    private const int TILE_MAX_FRAGMENTS = 1024;
     private const int BOX_BLUR_RADIUS = 8;
 
     // Struct sizes in compute shader
@@ -188,14 +188,17 @@ public class AberrationRenderPass : ScriptableRenderPass
         OnResolutionChanged(new Vector2Int(1280, 720));
     }
 
-    // this is separate from resolution change because we might want to change aperture / focus without changing resolution
-    void RecalculatePSFTexture(Vector2Int newResolution)
-    {
+    void RecalculateScaledPSFs(Vector2Int newResolution)
+		{
         System.Diagnostics.Stopwatch timer = System.Diagnostics.Stopwatch.StartNew();
         psfStack.ComputeScaledPSFs(Camera.main.fieldOfView, newResolution.y);
         timer.Stop();
         Debug.Log("rescale PSFs: " + (float)timer.ElapsedMilliseconds / 1000.0f);
+    }
 
+    // this is separate from resolution change because we might want to change aperture / focus without changing resolution
+    void RecalculatePSFTexture(Vector2Int newResolution)
+    {
         // Set aperture diameter / focus distance uniforms - default is 5 mm pupil size focused at 8 m (optical infinity) away
         // TODO: this should be user-adjustable using some nice UI, or should maybe dynamically adjust based on scene conditions
         apertureDiameter = 4.5f;
@@ -448,7 +451,7 @@ public class AberrationRenderPass : ScriptableRenderPass
         psfInterpolationBuffer.SetData(csPsfInterpolationBuffer);
 
         int numSlices = CalculateNumSlices(psfStack, new(resolution.x, resolution.y), Camera.main.fieldOfView);
-        psfTexture = new RenderTexture(blurRadiusLimits[1] * 2 + 1, blurRadiusLimits[1] * 2 + 1, 0, RenderTextureFormat.ARGBFloat)
+        psfTexture = new RenderTexture(blurRadiusLimits[1] * 2 + 1, blurRadiusLimits[1] * 2 + 1, 0, RenderTextureFormat.RGB111110Float)
         {
             enableRandomWrite = true,
             dimension = TextureDimension.Tex3D,
@@ -519,6 +522,7 @@ public class AberrationRenderPass : ScriptableRenderPass
         tileFragmentCountBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numTiles.x * numTiles.y, TileFragmentCountSize);
         tileSortBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numTiles.x * numTiles.y * TILE_MAX_FRAGMENTS, SortIndexSize);
 
+        RecalculateScaledPSFs(newResolution);
         RecalculatePSFTexture(newResolution);
     }
 

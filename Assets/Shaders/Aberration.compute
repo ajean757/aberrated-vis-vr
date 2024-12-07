@@ -12,11 +12,11 @@
 #define FLT_MAX 3.402823466e+38F
 
 /* These must be synced with constants in the render pass */
-#define TILE_SIZE 16
-#define SHARED_ARRAY_SIZE 256 // TILE_SIZE * TILE_SIZE
+#define TILE_SIZE 8
+#define SHARED_ARRAY_SIZE 64 // TILE_SIZE * TILE_SIZE
 
-#define TILE_MAX_FRAGMENTS 4096
-#define SORT_GROUP_SIZE 1024
+#define TILE_MAX_FRAGMENTS 1024
+#define SORT_GROUP_SIZE 256
 
 #define SORT_ELEMENTS_PER_THREAD 2 // TILE_MAX_FRAGMENTS / SORTGROUP_SIZE / 2
 
@@ -848,7 +848,6 @@ float3 SamplePsf(const uint2 fragmentCoord, const FragmentData fragmentData)
     else
     {
         return psfTexture.SampleLevel(samplerpsfTexture, texCoords, 0).rgb;
-
     }
 }
 
