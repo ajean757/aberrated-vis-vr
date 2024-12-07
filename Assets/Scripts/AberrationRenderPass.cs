@@ -155,6 +155,9 @@ public class AberrationRenderPass : ScriptableRenderPass
 
     private static readonly int psfTextureLayerExtentsId = Shader.PropertyToID("psfTextureLayerExtents");
     private GraphicsBuffer psfTextureLayerExtentsBuffer;
+
+    public float apertureDiameter;
+    public float focusDistance;
     public RenderTexture GetPsfTexture()
     {
         return psfTexture;
@@ -179,7 +182,7 @@ public class AberrationRenderPass : ScriptableRenderPass
 
         // read in PSFs
         psfStack = new();
-        psfStack.ReadPsfStack(defaultSettings.PSFSet);
+        psfStack.ReadPsfStackBinary(defaultSettings.PSFSet);
 
         // run initialization code w/ dummy value to ensure all buffers are set up before any rendering happens
         OnResolutionChanged(new Vector2Int(1280, 720));
@@ -188,12 +191,17 @@ public class AberrationRenderPass : ScriptableRenderPass
     // this is separate from resolution change because we might want to change aperture / focus without changing resolution
     void RecalculatePSFTexture(Vector2Int newResolution)
     {
+        System.Diagnostics.Stopwatch timer = System.Diagnostics.Stopwatch.StartNew();
         psfStack.ComputeScaledPSFs(Camera.main.fieldOfView, newResolution.y);
+        timer.Stop();
+        Debug.Log("rescale PSFs: " + (float)timer.ElapsedMilliseconds / 1000.0f);
 
         // Set aperture diameter / focus distance uniforms - default is 5 mm pupil size focused at 8 m (optical infinity) away
         // TODO: this should be user-adjustable using some nice UI, or should maybe dynamically adjust based on scene conditions
-        cs.SetFloat(apertureId, 5.0f);
-        cs.SetFloat(focusDistanceId, 8.0f);
+        apertureDiameter = 4.5f;
+        focusDistance = 7.0f;
+        cs.SetFloat(apertureId, apertureDiameter);
+        cs.SetFloat(focusDistanceId, focusDistance);
 
         // Set pinhole camera parameters
         // TODO: we will need to adjust this part for stereoscopic rendering also
@@ -316,7 +324,7 @@ public class AberrationRenderPass : ScriptableRenderPass
                 // linear search
                 for (int i = 0; i < values.Count - 1; i += 1)
                 {
-                    if (interpolant > values[i] && interpolant < values[i + 1])
+                    if ((interpolant > values[i] && interpolant < values[i + 1]) || interpolant == values[i])
                     {
                         lower = i;
                         upper = i + 1;
@@ -432,8 +440,8 @@ public class AberrationRenderPass : ScriptableRenderPass
         float[] csPsfWeightsBuffer = CreatePsfWeightBuffer(psfStack);
         psfWeightsBuffer.SetData(csPsfWeightsBuffer);
 
-        // Interpolate blur radius over aperture diameter / focus distance. For now, the aberration set we are using (healthy) only has one possible value for both, so the actual values of aperture / focus are irrelevant
-        InterpolatedPsfParam[] csInterpolatedPsfParamsBuffer = CreateInterpolatedPsfParamBuffer(psfStack, 0.0f, 0.0f);
+        // Interpolate blur radius over aperture diameter / focus distance. 
+        InterpolatedPsfParam[] csInterpolatedPsfParamsBuffer = CreateInterpolatedPsfParamBuffer(psfStack, 1.0f / focusDistance, apertureDiameter);
         interpolatedPsfParamsBuffer.SetData(csInterpolatedPsfParamsBuffer);
 
         uint[] csPsfInterpolationBuffer = CreatePsfInterpolationBuffer(csInterpolatedPsfParamsBuffer);

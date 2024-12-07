@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using UnityEngine;
 
 
@@ -93,68 +94,6 @@ public class PSF
             for (int a = 0; a < weights[j].GetLength(0); a += 1)
                 for (int b = 0; b < weights[j].GetLength(1); b += 1)
                     weights[j][a, b] /= sum;
-        }
-
-        static float[,] Resize(float[,] inputMatrix, int newSize)
-        {
-            int oldSizeRows = inputMatrix.GetLength(0); // number of rows in input matrix
-            int oldSizeCols = inputMatrix.GetLength(1); // number of columns in input matrix
-
-            if (oldSizeRows != oldSizeCols)
-                throw new ArgumentException("Input matrix must be square.");
-
-            if (newSize == 0)
-            {
-                throw new ArgumentException("0 size output");
-            }
-            else if (newSize == 1)
-            {
-                return new float[1, 1] { { 1.0f } };
-            }
-            int oldSize = oldSizeRows;
-
-            float[,] outputMatrix = new float[newSize, newSize];
-
-            // Calculate the scaling factor between the old and new sizes
-            float scale = (float)(oldSize - 1) / (newSize - 1);
-
-            for (int i = 0; i < newSize; i++)
-            {
-                // Map the output pixel's row coordinate to the input matrix
-                float y = i * scale;
-                int y0 = (int)Math.Floor(y);
-                int y1 = y0 + 1;
-                if (y1 >= oldSize)
-                    y1 = y0;
-                float ty = y - y0;
-
-                for (int j = 0; j < newSize; j++)
-                {
-                    // Map the output pixel's column coordinate to the input matrix
-                    float x = j * scale;
-                    int x0 = (int)Math.Floor(x);
-                    int x1 = x0 + 1;
-                    if (x1 >= oldSize)
-                        x1 = x0;
-                    float tx = x - x0;
-
-                    // Retrieve the four neighboring values from the input matrix
-                    float c00 = inputMatrix[y0, x0];
-                    float c10 = inputMatrix[y0, x1];
-                    float c01 = inputMatrix[y1, x0];
-                    float c11 = inputMatrix[y1, x1];
-
-                    // Compute the interpolated value using bilinear interpolation formula
-                    float value = (1 - tx) * (1 - ty) * c00 +
-                                  tx * (1 - ty) * c10 +
-                                  (1 - tx) * ty * c01 +
-                                  tx * ty * c11;
-
-                    outputMatrix[i, j] = value;
-                }
-            }
-
-            return outputMatrix;
         }
 
         static float[,] ResizeArea(float[,] inputMatrix, int newSize)
@@ -292,7 +231,70 @@ public class PSFStack
     public float focusDioptresStep;
 
     #region IO
-    public void ReadPsfStack(string psfSetName)
+    public void ReadPsfStackBinary(string psfSetName)
+    {
+        ReadPsfSamplingParameters(psfSetName);
+
+        // Adjust filename as needed
+        string psfFilename = Path.Combine(psfSetName, "psf");
+        psfFilename = psfFilename.Replace(Path.DirectorySeparatorChar, '/');
+
+        int n = PSFCount(); // Number of PSFs
+
+				System.Diagnostics.Stopwatch timer = System.Diagnostics.Stopwatch.StartNew();
+
+        using (BinaryReader br = new BinaryReader(File.OpenRead(psfFilename)))
+        {
+            // Read each PSF entry
+            for (int idx = 0; idx < n; idx++)
+            {
+                float objectDioptre = 1.0f / br.ReadSingle(); // encoded as distance in binary format
+                float horizAngle = br.ReadSingle();
+                float vertAngle = br.ReadSingle();
+                float lambda = br.ReadSingle();
+                float aperture = br.ReadSingle();
+                float focus = 1.0f / br.ReadSingle(); // see above
+                float blurRadiusDeg = br.ReadSingle();
+
+                uint k = br.ReadUInt32();
+                float[,] w = new float[k, k];
+
+                for (int i = 0; i < k; i++)
+                {
+                    for (int j = 0; j < k; j++)
+                    {
+                        w[j, i] = br.ReadSingle(); // data is serialized in column-major format, we expect row-major in the rest of the code
+                    }
+                }
+
+                PSF psf = new PSF
+                {
+                    objectDioptre = objectDioptre,
+                    incidentAngleHorizontal = horizAngle,
+                    incidentAngleVertical = vertAngle,
+                    lambda = lambda,
+                    apertureDiameter = aperture,
+                    focusDioptre = focus,
+                    blurRadiusDeg = blurRadiusDeg,
+                    rawWeights = w
+                };
+
+                var (a, b, c, d, e, f) = SplitIndex(idx);
+                this.stack[a, b, c, d, e, f] = psf;
+            }
+        }
+
+        timer.Stop();
+        Debug.Log("read in PSFs: " + (float)timer.ElapsedMilliseconds / 1000.0f);
+    }
+
+    public void ReadPsfStackText(string psfSetName)
+		{
+        ReadPsfSamplingParameters(psfSetName);
+        ReadPsfFiles(psfSetName);
+		}
+
+    void ReadPsfSamplingParameters(string psfSetName)
     {
         string psfStackFilename = Path.Combine(psfSetName, "psfstack");
         psfStackFilename = psfStackFilename.Replace(Path.DirectorySeparatorChar, '/');
@@ -327,11 +329,6 @@ public class PSFStack
         apertureDiametersStep = apertureDiameters.Count > 1 ? Mathf.Abs(apertureDiameters[1] - apertureDiameters[0]) : 1.0f;
         focusDioptresStep = focusDioptres.Count > 1 ? Mathf.Abs(focusDioptres[1] - focusDioptres[0]) : 1.0f;
 
-        ReadPsfFiles(psfSetName);
-    }
-
-    void ReadPsfFiles(string psfSetName)
-    {
         this.stack = new PSF[
           objectDistances.Count,
           incidentAnglesHorizontal.Count,
@@ -340,6 +337,10 @@ public class PSFStack
           apertureDiameters.Count,
           focusDioptres.Count
         ];
+    }
+
+    void ReadPsfFiles(string psfSetName)
+    {
         for (int i = 0; i < objectDistances.Count; i += 1)
         {
             for (int j = 0; j < incidentAnglesHorizontal.Count; j += 1)
@@ -471,6 +472,34 @@ public class PSFStack
             + idx.aperture * (focusDioptres.Count)
             + idx.focus;
     }
+
+    public (int, int, int, int, int, int) SplitIndex(int linearIdx) {
+        int i = linearIdx / (incidentAnglesHorizontal.Count * incidentAnglesVertical.Count * lambdas.Count * apertureDiameters.Count * focusDioptres.Count);
+        int j = linearIdx % (incidentAnglesHorizontal.Count * incidentAnglesVertical.Count * lambdas.Count * apertureDiameters.Count * focusDioptres.Count);
+
+        int k = j / (incidentAnglesVertical.Count * lambdas.Count * apertureDiameters.Count * focusDioptres.Count);
+        int l = j % (incidentAnglesVertical.Count * lambdas.Count * apertureDiameters.Count * focusDioptres.Count);
+
+        int m = l / (lambdas.Count * apertureDiameters.Count * focusDioptres.Count);
+        int n = l % (lambdas.Count * apertureDiameters.Count * focusDioptres.Count);
+
+        int o = n / (apertureDiameters.Count * focusDioptres.Count);
+        int p = n % (apertureDiameters.Count * focusDioptres.Count);
+
+        int q = p / (focusDioptres.Count);
+        int r = p % (focusDioptres.Count);
+
+        int s = r / 1;
+        int t = r % 1;
+
+        return (i, k, m, o, q, s);
+    }
+
+    public PSFIndex IndexFromLinearIndex(int linearIdx)
+		{
+        var (i, j, k, l, m, n) = SplitIndex(linearIdx);
+        return new(i, j, k, l, m, n);
+		}
     public void Iterate(Action<PSFIndex, PSF> fn)
     {
         for (int i = 0; i < objectDistances.Count; i += 1)
@@ -500,9 +529,16 @@ public class PSFStack
     // see CreateScaledWeights
     public void ComputeScaledPSFs(float vfov, int yres)
     {
-        Iterate((idx, psf) =>
+        // Iterate((idx, psf) =>
+        // {
+        //     psf.CreateScaledWeights(idx, this, vfov, yres);
+        // });
+
+        Parallel.For(0, PSFCount(), psfId =>
         {
-            psf.CreateScaledWeights(idx, this, vfov, yres);
+            PSFIndex psfIndex = IndexFromLinearIndex(psfId);
+            PSF psf = GetPSF(psfIndex);
+            psf.CreateScaledWeights(psfIndex, this, vfov, yres);
         });
     }
 }
