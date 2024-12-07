@@ -113,6 +113,9 @@ public class AberrationRenderPass : ScriptableRenderPass
     private readonly int interpolatePsfTextureIndex;
     private readonly int convolveIndex;
 
+    private readonly int tileBufferBuildEditorIndex;
+    private readonly int convolveEditorIndex;
+
     // Buffers (lazily initialized when resolution changes)
     private static readonly int fragmentBufferId = Shader.PropertyToID("fragmentBuffer");
     private GraphicsBuffer fragmentBuffer = null;
@@ -135,6 +138,9 @@ public class AberrationRenderPass : ScriptableRenderPass
     // Runtime cbuffer values
     private Vector2Int numTiles = Vector2Int.zero;
     private Vector2Int resolution = Vector2Int.zero;
+
+    // Params
+    private bool isPlaying;
 
     private ComputeShader cs;
 
@@ -172,6 +178,7 @@ public class AberrationRenderPass : ScriptableRenderPass
     {
         this.defaultSettings = defaultSettings;
         this.cs = cs;
+        this.isPlaying = Application.isPlaying;
 
         // Initialize kernel IDs
         tileBufferBuildIndex = cs.FindKernel("TileBufferBuild");
@@ -181,13 +188,15 @@ public class AberrationRenderPass : ScriptableRenderPass
         blurTestIndex = cs.FindKernel("BlurTest");
         interpolatePsfTextureIndex = cs.FindKernel("InterpolatePSFTexture");
 
+        tileBufferBuildEditorIndex = cs.FindKernel("TileBufferBuildEditor");
+        convolveEditorIndex = cs.FindKernel("ConvolveEditor");
 
         // read in PSFs
         psfStack = new();
         psfStack.ReadPsfStack(defaultSettings.PSFSet);
 
         // run initialization code w/ dummy value to ensure all buffers are set up before any rendering happens
-        OnResolutionChanged(new Vector2Int(1280, 720));
+        SetParams(new Vector2Int(1280, 720));
     }
 
     // this is separate from resolution change because we might want to change aperture / focus without changing resolution
@@ -499,10 +508,10 @@ public class AberrationRenderPass : ScriptableRenderPass
         psfTextureDirty = true;
     }
 
-    void OnResolutionChanged(Vector2Int newResolution)
+    void SetParams(Vector2Int newResolution)
     {
         resolution = newResolution;
-        Debug.Log("Resolution changed to " + resolution.ToString());
+        Debug.Log("Resolution changed to " + resolution.ToString() + " in " + (isPlaying ? "play mode" : "editor mode"));
         numTiles = new Vector2Int((resolution.x - 1) / TILE_SIZE + 1, (resolution.y - 1) / TILE_SIZE + 1);
         cs.SetInts(resolutionId, new[] { resolution.x, resolution.y });
         cs.SetInts(numTilesId, new[] { numTiles.x, numTiles.y });
@@ -512,9 +521,9 @@ public class AberrationRenderPass : ScriptableRenderPass
         tileFragmentCountBuffer?.Release();
         tileSortBuffer?.Release();
 
-        fragmentBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, resolution.x * resolution.y * 2, FragmentDataSize);
-        tileFragmentCountBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numTiles.x * numTiles.y * 2, TileFragmentCountSize);
-        tileSortBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numTiles.x * numTiles.y * TILE_MAX_FRAGMENTS * 2, SortIndexSize);
+        fragmentBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, resolution.x * resolution.y * (isPlaying ? 2 : 1), FragmentDataSize);
+        tileFragmentCountBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numTiles.x * numTiles.y * (isPlaying ? 2 : 1), TileFragmentCountSize);
+        tileSortBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numTiles.x * numTiles.y * TILE_MAX_FRAGMENTS * (isPlaying ? 2 : 1), SortIndexSize);
 
         RecalculatePSFTexture(newResolution);
     }
@@ -647,7 +656,7 @@ public class AberrationRenderPass : ScriptableRenderPass
         // Update cbuffer values + recalculate PSF texture
         if (resolution != new Vector2Int(cameraData.cameraTargetDescriptor.width, cameraData.cameraTargetDescriptor.height))
         {
-            OnResolutionChanged(new Vector2Int(cameraData.cameraTargetDescriptor.width, cameraData.cameraTargetDescriptor.height));
+            SetParams(new Vector2Int(cameraData.cameraTargetDescriptor.width, cameraData.cameraTargetDescriptor.height));
         }
 
         // This check is to avoid an error from the material preview in the scene
@@ -702,10 +711,12 @@ public class AberrationRenderPass : ScriptableRenderPass
         BufferHandle tileFragmentCountHandle = renderGraph.ImportBuffer(tileFragmentCountBuffer);
         BufferHandle tileSortHandle = renderGraph.ImportBuffer(tileSortBuffer);
 
+        int layers = isPlaying ? 2 : 1;
+
         using (var builder = renderGraph.AddComputePass("TileBufferBuild", out PassData passData))
         {
             passData.cs = cs;
-            passData.kernelIndex = tileBufferBuildIndex;
+            passData.kernelIndex = isPlaying ? tileBufferBuildIndex : tileBufferBuildEditorIndex;
             passData.bufferList = new()
             {
                 (fragmentBufferId, fragmentHandle, AccessFlags.Write),
@@ -716,10 +727,10 @@ public class AberrationRenderPass : ScriptableRenderPass
             };
             passData.textureList = new()
             {
-                (iColorArrayId, srcCamColor, AccessFlags.Read),
-                (iDepthArrayId, srcCamDepth, AccessFlags.Read),
+                (isPlaying ? iColorArrayId : iColorId, srcCamColor, AccessFlags.Read),
+                (isPlaying ? iDepthArrayId : iDepthId, srcCamDepth, AccessFlags.Read),
             };
-            passData.threadGroups = new Vector3Int(numTiles.x, numTiles.y, 2);
+            passData.threadGroups = new Vector3Int(numTiles.x, numTiles.y, layers);
 
             passData.Build(builder);
             builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
@@ -736,7 +747,7 @@ public class AberrationRenderPass : ScriptableRenderPass
                 (tileSortBufferId, tileSortHandle, AccessFlags.Write),
             };
             passData.textureList = new();
-            passData.threadGroups = new Vector3Int(numTiles.x, numTiles.y, 2);
+            passData.threadGroups = new Vector3Int(numTiles.x, numTiles.y, layers);
 
             passData.Build(builder);
             builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
@@ -752,7 +763,7 @@ public class AberrationRenderPass : ScriptableRenderPass
                 (tileSortBufferId, tileSortHandle, AccessFlags.ReadWrite),
             };
             passData.textureList = new();
-            passData.threadGroups = new(2, numTiles.x, numTiles.y);
+            passData.threadGroups = new(layers, numTiles.x, numTiles.y);
 
             passData.Build(builder);
             builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
@@ -761,7 +772,7 @@ public class AberrationRenderPass : ScriptableRenderPass
         using (var builder = renderGraph.AddComputePass("Convolve", out PassData passData))
         {
             passData.cs = cs;
-            passData.kernelIndex = convolveIndex;
+            passData.kernelIndex = isPlaying ? convolveIndex : convolveEditorIndex;
             passData.bufferList = new()
             {
                 (fragmentBufferId, fragmentHandle, AccessFlags.Read),
@@ -774,9 +785,9 @@ public class AberrationRenderPass : ScriptableRenderPass
             passData.textureList = new()
             {
                 (psfTextureId, psfImageHandle, AccessFlags.Read),
-                (oColorArrayId, dst, AccessFlags.Write),
+                (isPlaying ? oColorArrayId : oColorId, dst, AccessFlags.Write),
             };
-            passData.threadGroups = new Vector3Int(numTiles.x, numTiles.y, 2);
+            passData.threadGroups = new Vector3Int(numTiles.x, numTiles.y, layers);
 
             passData.Build(builder);
             builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));

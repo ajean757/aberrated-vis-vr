@@ -7,6 +7,9 @@
 #pragma kernel BlurTest
 #pragma kernel InterpolatePSFTexture
 
+#pragma kernel TileBufferBuildEditor
+#pragma kernel ConvolveEditor
+
 //#pragma enable_cbuffer
 
 #define FLT_MAX 3.402823466e+38F
@@ -501,17 +504,11 @@ bool OverlapsTile(const uint2 tileCoord, const int2 fragmentCoord, const float b
 // 	fragmentBuffer[fragmentIndex] = fragmentData;
 // }
 
-[numthreads(TILE_SIZE, TILE_SIZE, 1)]
-void TileBufferBuild(uint3 id : SV_DispatchThreadID)
+void TileBufferBuildHelper(const uint3 id, const float3 color, const float depth)
 {
     const uint2 fragmentCoord = id.xy;
     const uint eyeIndex = id.z;
-    if (any(fragmentCoord >= resolution))
-        return;
     const uint fragmentIndex = FragmentArrayIndex(fragmentCoord, eyeIndex);
-
-    const float3 color = iColorArray[id].xyz;;
-    const float depth = iDepthArray[id].x;;
 
     FragmentData fragmentData;
     fragmentData.color = color;
@@ -552,6 +549,30 @@ void TileBufferBuild(uint3 id : SV_DispatchThreadID)
     {
         tileFragmentCountBuffer[countIndex] = size.x * size.y;
     }
+}
+
+[numthreads(TILE_SIZE, TILE_SIZE, 1)]
+void TileBufferBuild(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= resolution))
+        return;
+
+    const float3 color = iColorArray[id].xyz;
+    const float depth = iDepthArray[id].x;
+
+    TileBufferBuildHelper(id, color, depth);
+}
+
+[numthreads(TILE_SIZE, TILE_SIZE, 1)]
+void TileBufferBuildEditor(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= resolution))
+        return;
+
+    const float3 color = iColor[id.xy].xyz;
+    const float depth = iDepth[id.xy].x;
+
+    TileBufferBuildHelper(id, color, depth);
 }
 
 [numthreads(TILE_SIZE, TILE_SIZE, 1)]
@@ -821,8 +842,7 @@ float3 SamplePsf(const uint2 fragmentCoord, const FragmentData fragmentData, con
 groupshared FragmentData tileFragments[SHARED_ARRAY_SIZE];
 groupshared uint fragmentCount;
 
-[numthreads(TILE_SIZE, TILE_SIZE, 1)]
-void Convolve(uint3 id : SV_DispatchThreadID)
+float3 ConvolveHelper(uint3 id)
 {
     const uint2 tileCoord = id.xy / TILE_SIZE;
     const uint2 threadId = id.xy % TILE_SIZE;
@@ -901,21 +921,29 @@ void Convolve(uint3 id : SV_DispatchThreadID)
 
     // 	// result += (1.0 - alpha) * weight * fragmentData.color;
     // 	// alpha = weight + (1.0 - weight) * alpha;
-    // }
-    // if (!invalid)
-    //     oColorArray[id] = float4(fragmentBuffer[fragmentIndex].color.xyz, 1.0f);
+
+    if (all(alpha != 0.0f))
+        return result / alpha;
+    return float3(0.0f, 0.0f, 0.0f);
+}
+
+[numthreads(TILE_SIZE, TILE_SIZE, 1)]
+void Convolve(uint3 id : SV_DispatchThreadID)
+{
+    float3 result = ConvolveHelper(id);
 
     // clear screen before writing over
-    if (!invalid)
-    {
-        oColorArray[id] = float4(0.0f, 0.0f, 0.0f, 1.0f);
-        if (any(result != 0.0f))
-        {
-            if (id.z == 1)
-                result.x += alpha * 0.1f;
-            oColorArray[id] = float4(result / alpha, 1.0f);
-        }
-        // oColor[fragmentCoord] = float4(result / alpha, 1);
-    }
+    if (all(id.xy < resolution))
+        oColorArray[id] = float4(result.xyz, 1.0f);
+}
+
+[numthreads(TILE_SIZE, TILE_SIZE, 1)]
+void ConvolveEditor(uint3 id : SV_DispatchThreadID)
+{
+    float3 result = ConvolveHelper(id);
+
+    // clear screen before writing over
+    if (all(id.xy < resolution))
+        oColor[id.xy] = float4(result.xyz, 1.0f);
 }
 
