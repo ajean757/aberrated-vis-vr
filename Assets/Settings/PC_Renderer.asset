@@ -12,7 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: da155e458d76ac748a88ffc3b935ac7f, type: 3}
   m_Name: AberrationRendererFeature
   m_EditorClassIdentifier: 
-  m_Active: 1
+  m_Active: 0
   PSFSet: Assets/Aberrations/healthy
   computeShader: {fileID: 7200000, guid: 50d21c579d4a37047b807b82cab50cb5, type: 3}
 --- !u!114 &11400000
