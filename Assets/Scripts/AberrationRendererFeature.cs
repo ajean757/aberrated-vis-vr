@@ -20,6 +20,8 @@ public class AberrationRendererFeature : ScriptableRendererFeature
     [SerializeField] private ComputeShader computeShader;
     //private Material material;
     private AberrationRenderPass aberrationRenderPass;
+    public float depth;
+    public float aperture;
 
     public override void Create()
     {
@@ -42,6 +44,9 @@ public class AberrationRendererFeature : ScriptableRendererFeature
         {
             renderer.EnqueuePass(aberrationRenderPass);
         }
+        aberrationRenderPass.SetDepth(depth);
+        aberrationRenderPass.SetAperture(aperture);
+
     }
 
     public AberrationRenderPass GetRenderPass()
@@ -64,6 +69,15 @@ public class AberrationRendererFeature : ScriptableRendererFeature
         // #else
         //         Destroy(material);
         // #endif
+    }
+
+    public void UpdateDepth(float newDepth)
+    {
+        depth = newDepth;
+    }
+    public void UpdateAperture(float newAperture)
+    {
+        aperture = newAperture;
     }
 }
 

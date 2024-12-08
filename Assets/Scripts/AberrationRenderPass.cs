@@ -155,8 +155,19 @@ public class AberrationRenderPass : ScriptableRenderPass
 
     private static readonly int psfTextureLayerExtentsId = Shader.PropertyToID("psfTextureLayerExtents");
     private GraphicsBuffer psfTextureLayerExtentsBuffer;
+    private float depth;
+    private float aperture;
 
-    public CenterScreenRaycast centerDepthScript;
+    public void SetDepth(float newDepth)
+    {
+        depth = newDepth;
+    }
+    public void SetAperture(float newAperture)
+    {
+        aperture = newAperture;
+    }
+
+
     public RenderTexture GetPsfTexture()
     {
         return psfTexture;
@@ -195,7 +206,7 @@ public class AberrationRenderPass : ScriptableRenderPass
         // Set aperture diameter / focus distance uniforms - default is 5 mm pupil size focused at 8 m (optical infinity) away
         // TODO: this should be user-adjustable using some nice UI, or should maybe dynamically adjust based on scene conditions
         cs.SetFloat(apertureId, 5.0f);
-        cs.SetFloat(focusDistanceId, 8.0f);
+        cs.SetFloat(focusDistanceId, depth);
 
         // Set pinhole camera parameters
         // TODO: we will need to adjust this part for stereoscopic rendering also
@@ -639,6 +650,7 @@ public class AberrationRenderPass : ScriptableRenderPass
 
         // Update the blur settings in the material
         UpdateAberrationSettings();
+
 
         // Update cbuffer values + recalculate PSF texture
         if (resolution != new Vector2Int(cameraData.cameraTargetDescriptor.width, cameraData.cameraTargetDescriptor.height))

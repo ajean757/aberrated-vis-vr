@@ -11,6 +11,7 @@ public class CenterScreenRaycast : MonoBehaviour
     public float centerScreenDepth; // Expose depth to other scripts
     public float GetCurrentDepth() => centerScreenDepth;
     public bool markerOn = false;
+    public AberrationRendererFeature aberrationFeature;
     void Update()
     {
         if (vrCamera == null)
@@ -64,6 +65,7 @@ public class CenterScreenRaycast : MonoBehaviour
                 Destroy(currentHitMarker);
             }
         }
+        aberrationFeature.UpdateDepth(centerScreenDepth);
         // computeShader.SetFloat("_CenterScreenDepth", GetCurrentDepth());
 
     }

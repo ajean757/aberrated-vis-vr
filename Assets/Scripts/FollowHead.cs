@@ -3,7 +3,7 @@ using UnityEngine;
 public class StickyUI : MonoBehaviour
 {
     public Transform cameraTransform; // Drag your Main Camera here
-    public Vector3 offset = new Vector3(0, 0.5f, 1.0f); // Adjust for position in front of face
+    public Vector3 offset = new Vector3(0f, 0f, 0f); // Adjust for position in front of face
 
     void LateUpdate()
     {
