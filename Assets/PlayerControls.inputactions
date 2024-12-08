@@ -27,7 +27,7 @@
                     "name": "Point",
                     "type": "Value",
                     "id": "65f42a16-f41d-4edb-954f-5ba09ed6c78a",
-                    "expectedControlType": "Vector2",
+                    "expectedControlType": "Vector3",
                     "processors": "",
                     "interactions": "",
                     "initialStateCheck": true
@@ -68,7 +68,7 @@
                 {
                     "name": "",
                     "id": "5098db5c-9d62-4efc-837f-3ee605f4640f",
-                    "path": "<XRController>{LeftHand}/{Point}",
+                    "path": "<XRController>{LeftHand}/{PointerPosition}",
                     "interactions": "",
                     "processors": "",
                     "groups": "",
