@@ -190,6 +190,16 @@ public class AberrationRenderPass : ScriptableRenderPass
 
     public float apertureDiameter;
     public float focusDistance;
+
+    public void SetDepth(float newDepth)
+    {
+        focusDistance = newDepth;
+    }
+    public void SetAperture(float newAperture)
+    {
+        apertureDiameter = newAperture;
+    }
+
     public RenderTexture GetPsfTexture()
     {
         return psfTexture;
@@ -250,13 +260,55 @@ public class AberrationRenderPass : ScriptableRenderPass
         Debug.Log("rescale PSFs: " + (float)timer.ElapsedMilliseconds / 1000.0f);
     }
 
+    void UpdateCbuffer(ComputeGraphContext cg)
+		{
+        cg.cmd.SetComputeFloatParam(cs, apertureId, apertureDiameter);
+        cg.cmd.SetComputeFloatParam(cs, focusDistanceId, focusDistance);
+
+        if (usingXR)
+        {
+            Vector3 cameraPositionLeft = Camera.main.GetStereoViewMatrix(Camera.StereoscopicEye.Left).GetPosition();
+            cg.cmd.SetComputeFloatParams(cs, cameraPositionId, cameraPositionLeft[0], cameraPositionLeft[1], cameraPositionLeft[2]);
+
+            Vector3[] leftCorners = new Vector3[4]; // lower left, upper left, upper right, lower right
+            Camera.main.CalculateFrustumCorners(new Rect(0, 0, 1, 1), Camera.main.farClipPlane, Camera.MonoOrStereoscopicEye.Left, leftCorners);
+
+            cg.cmd.SetComputeFloatParams(cs, farLowerLeftId, leftCorners[0][0], leftCorners[0][1], leftCorners[0][2]);
+            cg.cmd.SetComputeFloatParams(cs, farUpperLeftId, leftCorners[1][0], leftCorners[1][1], leftCorners[1][2]);
+            cg.cmd.SetComputeFloatParams(cs, farUpperRightId, leftCorners[2][0], leftCorners[2][1], leftCorners[2][2]);
+            cg.cmd.SetComputeFloatParams(cs, farLowerRightId, leftCorners[3][0], leftCorners[3][1], leftCorners[3][2]);
+
+            Vector3 cameraPositionRight = Camera.main.GetStereoViewMatrix(Camera.StereoscopicEye.Right).GetPosition();
+            cg.cmd.SetComputeFloatParams(cs, rightCameraPositionId, cameraPositionRight[0], cameraPositionRight[1], cameraPositionRight[2]);
+
+            Vector3[] rightCorners = new Vector3[4]; // lower left, upper left, upper right, lower right
+            Camera.main.CalculateFrustumCorners(new Rect(0, 0, 1, 1), Camera.main.farClipPlane, Camera.MonoOrStereoscopicEye.Right, rightCorners);
+
+            cg.cmd.SetComputeFloatParams(cs, rightFarLowerLeftId, rightCorners[0][0], rightCorners[0][1], rightCorners[0][2]);
+            cg.cmd.SetComputeFloatParams(cs, rightFarUpperLeftId, rightCorners[1][0], rightCorners[1][1], rightCorners[1][2]);
+            cg.cmd.SetComputeFloatParams(cs, rightFarUpperRightId, rightCorners[2][0], rightCorners[2][1], rightCorners[2][2]);
+            cg.cmd.SetComputeFloatParams(cs, rightFarLowerRightId, rightCorners[3][0], rightCorners[3][1], rightCorners[3][2]);
+        }
+        else
+        {
+            Vector3 cameraPosition = Camera.main.transform.position;
+            cg.cmd.SetComputeFloatParams(cs, cameraPositionId, cameraPosition[0], cameraPosition[1], cameraPosition[2]);
+
+            Vector3[] corners = new Vector3[4]; // lower left, upper left, upper right, lower right
+            Camera.main.CalculateFrustumCorners(new Rect(0, 0, 1, 1), Camera.main.farClipPlane, Camera.MonoOrStereoscopicEye.Mono, corners);
+
+            cg.cmd.SetComputeFloatParams(cs, farLowerLeftId, corners[0][0], corners[0][1], corners[0][2]);
+            cg.cmd.SetComputeFloatParams(cs, farUpperLeftId, corners[1][0], corners[1][1], corners[1][2]);
+            cg.cmd.SetComputeFloatParams(cs, farUpperRightId, corners[2][0], corners[2][1], corners[2][2]);
+            cg.cmd.SetComputeFloatParams(cs, farLowerRightId, corners[3][0], corners[3][1], corners[3][2]);
+        }
+    }
+
     // this is separate from resolution change because we might want to change aperture / focus without changing resolution
     void RecalculatePSFTexture(Vector2Int newResolution)
     {
         // Set aperture diameter / focus distance uniforms - default is 5 mm pupil size focused at 8 m (optical infinity) away
         // TODO: this should be user-adjustable using some nice UI, or should maybe dynamically adjust based on scene conditions
-        apertureDiameter = 4.5f;
-        focusDistance = 7.0f;
         cs.SetFloat(apertureId, apertureDiameter);
         cs.SetFloat(focusDistanceId, focusDistance);
 
@@ -822,6 +874,7 @@ public class AberrationRenderPass : ScriptableRenderPass
             SetParams(new Vector2Int(cameraData.cameraTargetDescriptor.width, cameraData.cameraTargetDescriptor.height));
         }
 
+
         // This check is to avoid an error from the material preview in the scene
         if (resolution.x == 0 || resolution.y == 0 || !srcCamColor.IsValid() || !dst.IsValid())
             return;
@@ -838,7 +891,7 @@ public class AberrationRenderPass : ScriptableRenderPass
         BufferHandle rightInterpolatedPsfParamsHandle = new();
         BufferHandle rightPsfInterpolationHandle = new();
         BufferHandle rightPsfTextureLayerExtentsHandle = new();
-
+        
         if (separateAberrations)
         {
             rightPsfWeightsHandle = renderGraph.ImportBuffer(rightPsfWeightsBuffer);
@@ -860,73 +913,74 @@ public class AberrationRenderPass : ScriptableRenderPass
             rightPsfImageHandle = renderGraph.ImportTexture(rightPsfImageRTHandle); 
         }
 
-        if (psfTextureDirty)
+        using (var builder = renderGraph.AddComputePass("InterpolatePSFTexture", out PassData passData))
         {
-            using (var builder = renderGraph.AddComputePass("InterpolatePSFTexture", out PassData passData))
+            passData.cs = cs;
+            passData.kernelIndex = interpolatePsfTextureIndex;
+            passData.bufferList = new()
+            {
+                (psfWeightsBufferId, psfWeightsHandle, AccessFlags.Read),
+                (psfParamsBufferId, psfParamsHandle, AccessFlags.Read),
+                (interpolatedPsfParamsBufferId, interpolatedPsfParamsHandle, AccessFlags.Read),
+                (psfInterpolationBufferId, psfInterpolationHandle, AccessFlags.Read),
+            };
+            passData.textureList = new()
+            {
+                (psfImageId, psfImageHandle, AccessFlags.Write)
+            };
+
+            int maxBlurRadiusCurrent = minMaxBlurRadiusCurrent[1];
+            int RoundedDiv(int a, int b)
+            {
+                return Mathf.CeilToInt((float)a / (float)b);
+            }
+
+            int xyGroups = RoundedDiv(2 * maxBlurRadiusCurrent + 1, 8);
+            int numLayers = psfTexture.volumeDepth;
+            passData.threadGroups = new Vector3Int(xyGroups, xyGroups, numLayers);
+
+            passData.Build(builder);
+            builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => {
+                // update cbuffer values - camera frustum + aperture + depth
+                UpdateCbuffer(cgContext);
+                ExecutePass(data, cgContext);
+            });
+        }
+
+        if (separateAberrations)
+				{
+            using (var builder = renderGraph.AddComputePass("InterpolatePSFTexture (Right)", out PassData passData))
             {
                 passData.cs = cs;
-                passData.kernelIndex = interpolatePsfTextureIndex;
+                passData.kernelIndex = interpolatePsfTextureRightIndex;
                 passData.bufferList = new()
                 {
-                    (psfWeightsBufferId, psfWeightsHandle, AccessFlags.Read),
-                    (psfParamsBufferId, psfParamsHandle, AccessFlags.Read),
-                    (interpolatedPsfParamsBufferId, interpolatedPsfParamsHandle, AccessFlags.Read),
-                    (psfInterpolationBufferId, psfInterpolationHandle, AccessFlags.Read),
+                    (psfWeightsBufferId, rightPsfWeightsHandle, AccessFlags.Read),
+                    (psfParamsBufferId, rightPsfParamsHandle, AccessFlags.Read),
+                    (interpolatedPsfParamsBufferId, rightInterpolatedPsfParamsHandle, AccessFlags.Read),
+                    (psfInterpolationBufferId, rightPsfInterpolationHandle, AccessFlags.Read),
                 };
                 passData.textureList = new()
                 {
-                    (psfImageId, psfImageHandle, AccessFlags.Write)
+                    (psfImageId, rightPsfImageHandle, AccessFlags.Write)
                 };
 
-                int maxBlurRadiusCurrent = minMaxBlurRadiusCurrent[1];
+                int rightMaxBlurRadiusCurrent = rightMinMaxBlurRadiusCurrent[1];
                 int RoundedDiv(int a, int b)
                 {
                     return Mathf.CeilToInt((float)a / (float)b);
                 }
 
-                int xyGroups = RoundedDiv(2 * maxBlurRadiusCurrent + 1, 8);
-                int numLayers = psfTexture.volumeDepth;
+                int xyGroups = RoundedDiv(2 * rightMaxBlurRadiusCurrent + 1, 8);
+                int numLayers = rightPsfTexture.volumeDepth;
                 passData.threadGroups = new Vector3Int(xyGroups, xyGroups, numLayers);
 
                 passData.Build(builder);
                 builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
             }
-
-            if (separateAberrations)
-						{
-                using (var builder = renderGraph.AddComputePass("InterpolatePSFTexture (Right)", out PassData passData))
-                {
-                    passData.cs = cs;
-                    passData.kernelIndex = interpolatePsfTextureRightIndex;
-                    passData.bufferList = new()
-                    {
-                        (psfWeightsBufferId, rightPsfWeightsHandle, AccessFlags.Read),
-                        (psfParamsBufferId, rightPsfParamsHandle, AccessFlags.Read),
-                        (interpolatedPsfParamsBufferId, rightInterpolatedPsfParamsHandle, AccessFlags.Read),
-                        (psfInterpolationBufferId, rightPsfInterpolationHandle, AccessFlags.Read),
-                    };
-                    passData.textureList = new()
-                    {
-                        (psfImageId, rightPsfImageHandle, AccessFlags.Write)
-                    };
-
-                    int rightMaxBlurRadiusCurrent = rightMinMaxBlurRadiusCurrent[1];
-                    int RoundedDiv(int a, int b)
-                    {
-                        return Mathf.CeilToInt((float)a / (float)b);
-                    }
-
-                    int xyGroups = RoundedDiv(2 * rightMaxBlurRadiusCurrent + 1, 8);
-                    int numLayers = rightPsfTexture.volumeDepth;
-                    passData.threadGroups = new Vector3Int(xyGroups, xyGroups, numLayers);
-
-                    passData.Build(builder);
-                    builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
-                }
-            }
-
-            psfTextureDirty = false;
         }
+
+        
 
         BufferHandle fragmentHandle = renderGraph.ImportBuffer(fragmentBuffer);
         BufferHandle tileFragmentCountHandle = renderGraph.ImportBuffer(tileFragmentCountBuffer);

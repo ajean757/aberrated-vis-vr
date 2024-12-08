@@ -10,8 +10,8 @@ public class CenterScreenRaycast : MonoBehaviour
     private GameObject currentHitMarker; // The active hit marker instance
     public float centerScreenDepth; // Expose depth to other scripts
     public float GetCurrentDepth() => centerScreenDepth;
-    public ComputeShader computeShader;
     public bool markerOn = false;
+    public AberrationRendererFeature aberrationFeature;
     void Update()
     {
         if (vrCamera == null)
@@ -30,8 +30,8 @@ public class CenterScreenRaycast : MonoBehaviour
         {
             // Log the depth (distance) of the first hit
             float depth = hitInfo.distance;
-            Debug.Log($"Hit object: {hitInfo.collider.name}, Depth: {depth} units");
-            centerScreenDepth = depth;
+/*            Debug.Log($"Hit object: {hitInfo.collider.name}, Depth: {depth} units");
+*/            centerScreenDepth = depth;
             // Place the hit marker at the hit point
             if (markerOn)
             {if (currentHitMarker == null && hitMarkerPrefab != null)
@@ -58,13 +58,14 @@ public class CenterScreenRaycast : MonoBehaviour
         {
             // Debug.Log("No hit detected.");
             // No hit: Set depth to infinity 
-            centerScreenDepth = float.PositiveInfinity;
+            centerScreenDepth = 1000.0f;
             // Remove the hit marker if nothing is hit
             if (currentHitMarker != null)
             {
                 Destroy(currentHitMarker);
             }
         }
+        aberrationFeature.UpdateDepth(centerScreenDepth);
         // computeShader.SetFloat("_CenterScreenDepth", GetCurrentDepth());
 
     }
