@@ -63,7 +63,7 @@ struct InterpolatedPsfParam
 public class AberrationRenderPass : ScriptableRenderPass
 {
     // Defined consts in compute shader
-    private const int TILE_SIZE = 8;
+    private const int TILE_SIZE = 16;
     private const int TILE_MAX_FRAGMENTS = 4096;
     private const int BOX_BLUR_RADIUS = 8;
 
@@ -73,13 +73,16 @@ public class AberrationRenderPass : ScriptableRenderPass
     private const int SortIndexSize = sizeof(uint) + sizeof(float);
 
     // Params
-    private static readonly int singlePassId = Shader.PropertyToID("singlePass");
+    private static readonly int separateAberrationsId = Shader.PropertyToID("separateAberrations");
     private static readonly int numTilesId = Shader.PropertyToID("numTiles");
     private static readonly int resolutionId = Shader.PropertyToID("resolution");
 
     private int2 minMaxBlurRadiusCurrent = int2.zero;
+    private int2 rightMinMaxBlurRadiusCurrent = int2.zero;
     private static readonly int minBlurRadiusCurrentId = Shader.PropertyToID("minBlurRadiusCurrent");
     private static readonly int maxBlurRadiusCurrentId = Shader.PropertyToID("maxBlurRadiusCurrent");
+    private static readonly int rightMinBlurRadiusCurrentId = Shader.PropertyToID("rightMinBlurRadiusCurrent");
+    private static readonly int rightMaxBlurRadiusCurrentId = Shader.PropertyToID("rightMaxBlurRadiusCurrent");
 
     private static readonly int numObjectDioptresId = Shader.PropertyToID("numObjectDioptres");
     private static readonly int objectDioptresMinId = Shader.PropertyToID("objectDioptresMin");
@@ -98,11 +101,18 @@ public class AberrationRenderPass : ScriptableRenderPass
     private static readonly int focusDistanceId = Shader.PropertyToID("focusDistance");
     private static readonly int nearClipId = Shader.PropertyToID("nearClip");
     private static readonly int farClipId = Shader.PropertyToID("farClip");
+
     private static readonly int cameraPositionId = Shader.PropertyToID("cameraPosition");
+    private static readonly int rightCameraPositionId = Shader.PropertyToID("rightCameraPosition");
+
     private static readonly int farLowerLeftId = Shader.PropertyToID("farLowerLeft");
     private static readonly int farUpperLeftId = Shader.PropertyToID("farUpperLeft");
     private static readonly int farUpperRightId = Shader.PropertyToID("farUpperRight");
     private static readonly int farLowerRightId = Shader.PropertyToID("farLowerRight");
+    private static readonly int rightFarLowerLeftId = Shader.PropertyToID("rightFarLowerLeft");
+    private static readonly int rightFarUpperLeftId = Shader.PropertyToID("rightFarUpperLeft");
+    private static readonly int rightFarUpperRightId = Shader.PropertyToID("rightFarUpperRight");
+    private static readonly int rightFarLowerRightId = Shader.PropertyToID("rightFarLowerRight");
 
 
     // Kernels (initialized in constructor)
@@ -111,6 +121,7 @@ public class AberrationRenderPass : ScriptableRenderPass
     private readonly int sortFragmentsIndex;
     private readonly int blurTestIndex;
     private readonly int interpolatePsfTextureIndex;
+    private readonly int interpolatePsfTextureRightIndex;
     private readonly int convolveIndex;
 
     private readonly int tileBufferBuildEditorIndex;
@@ -140,7 +151,8 @@ public class AberrationRenderPass : ScriptableRenderPass
     private Vector2Int resolution = Vector2Int.zero;
 
     // Params
-    private bool isPlaying;
+    private bool usingXR;
+    private bool separateAberrations; // if both eyes use same aberration, we only need 1 texture
 
     private ComputeShader cs;
 
@@ -148,24 +160,33 @@ public class AberrationRenderPass : ScriptableRenderPass
 
     private static readonly int psfParamsBufferId = Shader.PropertyToID("psfParams");
     private GraphicsBuffer psfParamsBuffer;
+    private GraphicsBuffer rightPsfParamsBuffer;
 
     private static readonly int psfWeightsBufferId = Shader.PropertyToID("psfWeights");
     private GraphicsBuffer psfWeightsBuffer;
+    private GraphicsBuffer rightPsfWeightsBuffer;
 
     private static readonly int interpolatedPsfParamsBufferId = Shader.PropertyToID("interpolatedPsfParams");
+    private static readonly int rightInterpolatedPsfParamsBufferId = Shader.PropertyToID("rightInterpolatedPsfParams");
     private GraphicsBuffer interpolatedPsfParamsBuffer;
+    private GraphicsBuffer rightInterpolatedPsfParamsBuffer;
 
     private static readonly int psfInterpolationBufferId = Shader.PropertyToID("psfInterpolationBuffer");
     private GraphicsBuffer psfInterpolationBuffer;
+    private GraphicsBuffer rightPsfInterpolationBuffer;
 
     // See note in Aberration.compute
     private static readonly int psfImageId = Shader.PropertyToID("psfImage");
     private static readonly int psfTextureId = Shader.PropertyToID("psfTexture");
+    private static readonly int rightPsfTextureId = Shader.PropertyToID("rightPsfTexture");
     private RenderTexture psfTexture;
+    private RenderTexture rightPsfTexture;
     private bool psfTextureDirty = false;
 
     private static readonly int psfTextureLayerExtentsId = Shader.PropertyToID("psfTextureLayerExtents");
+    private static readonly int rightPsfTextureLayerExtentsId = Shader.PropertyToID("rightPsfTextureLayerExtents");
     private GraphicsBuffer psfTextureLayerExtentsBuffer;
+    private GraphicsBuffer rightPsfTextureLayerExtentsBuffer;
 
     public float apertureDiameter;
     public float focusDistance;
@@ -176,12 +197,20 @@ public class AberrationRenderPass : ScriptableRenderPass
 
 
     public PSFStack psfStack;
+    public PSFStack rightPsfStack;
 
     public AberrationRenderPass(AberrationSettings defaultSettings, ComputeShader cs)
     {
         this.defaultSettings = defaultSettings;
         this.cs = cs;
-        this.isPlaying = Application.isPlaying;
+
+        // determine if we are using XR or not
+        bool usingXR = GameObject.FindAnyObjectByType<XRManager>().UsingXR();
+        Debug.Log("Using XR: " + usingXR);
+        this.usingXR = usingXR;
+        this.separateAberrations = this.usingXR && (defaultSettings.PSFSet != defaultSettings.RightPSFSet);
+
+        cs.SetBool(separateAberrationsId, separateAberrations);
 
         // Initialize kernel IDs
         tileBufferBuildIndex = cs.FindKernel("TileBufferBuild");
@@ -190,6 +219,7 @@ public class AberrationRenderPass : ScriptableRenderPass
         convolveIndex = cs.FindKernel("Convolve");
         blurTestIndex = cs.FindKernel("BlurTest");
         interpolatePsfTextureIndex = cs.FindKernel("InterpolatePSFTexture");
+        interpolatePsfTextureRightIndex = cs.FindKernel("InterpolatePSFTextureRight");
 
         tileBufferBuildEditorIndex = cs.FindKernel("TileBufferBuildEditor");
         convolveEditorIndex = cs.FindKernel("ConvolveEditor");
@@ -197,6 +227,12 @@ public class AberrationRenderPass : ScriptableRenderPass
         // read in PSFs
         psfStack = new();
         psfStack.ReadPsfStackBinary(defaultSettings.PSFSet);
+
+        if (separateAberrations)
+				{
+            rightPsfStack = new();
+            rightPsfStack.ReadPsfStackBinary(defaultSettings.RightPSFSet);
+				}
 
         // run initialization code w/ dummy value to ensure all buffers are set up before any rendering happens
         SetParams(new Vector2Int(1280, 720));
@@ -206,6 +242,10 @@ public class AberrationRenderPass : ScriptableRenderPass
 		{
         System.Diagnostics.Stopwatch timer = System.Diagnostics.Stopwatch.StartNew();
         psfStack.ComputeScaledPSFs(Camera.main.fieldOfView, newResolution.y);
+        if (separateAberrations)
+				{
+            rightPsfStack.ComputeScaledPSFs(Camera.main.fieldOfView, newResolution.y);
+				}
         timer.Stop();
         Debug.Log("rescale PSFs: " + (float)timer.ElapsedMilliseconds / 1000.0f);
     }
@@ -226,23 +266,57 @@ public class AberrationRenderPass : ScriptableRenderPass
         cs.SetFloat(nearClipId, Camera.main.nearClipPlane);
         cs.SetFloat(farClipId, Camera.main.farClipPlane);
 
-        Vector3 cameraPosition = Camera.main.transform.position;
-        cs.SetFloats(cameraPositionId, cameraPosition[0], cameraPosition[1], cameraPosition[2]);
+        if (usingXR)
+        {
+            Vector3 cameraPositionLeft = Camera.main.GetStereoViewMatrix(Camera.StereoscopicEye.Left).GetPosition();
+            cs.SetFloats(cameraPositionId, cameraPositionLeft[0], cameraPositionLeft[1], cameraPositionLeft[2]);
 
-        Vector3[] corners = new Vector3[4]; // lower left, upper left, upper right, lower right
-        Camera.main.CalculateFrustumCorners(new Rect(0, 0, 1, 1), Camera.main.farClipPlane, Camera.MonoOrStereoscopicEye.Mono, corners);
+            Vector3[] leftCorners = new Vector3[4]; // lower left, upper left, upper right, lower right
+            Camera.main.CalculateFrustumCorners(new Rect(0, 0, 1, 1), Camera.main.farClipPlane, Camera.MonoOrStereoscopicEye.Left, leftCorners);
 
-        cs.SetFloats(farLowerLeftId, corners[0][0], corners[0][1], corners[0][2]);
-        cs.SetFloats(farUpperLeftId, corners[1][0], corners[1][1], corners[1][2]);
-        cs.SetFloats(farUpperRightId, corners[2][0], corners[2][1], corners[2][2]);
-        cs.SetFloats(farLowerRightId, corners[3][0], corners[3][1], corners[3][2]);
+            cs.SetFloats(farLowerLeftId, leftCorners[0][0], leftCorners[0][1], leftCorners[0][2]);
+            cs.SetFloats(farUpperLeftId, leftCorners[1][0], leftCorners[1][1], leftCorners[1][2]);
+            cs.SetFloats(farUpperRightId, leftCorners[2][0], leftCorners[2][1], leftCorners[2][2]);
+            cs.SetFloats(farLowerRightId, leftCorners[3][0], leftCorners[3][1], leftCorners[3][2]);
 
+            Vector3 cameraPositionRight = Camera.main.GetStereoViewMatrix(Camera.StereoscopicEye.Right).GetPosition();
+            cs.SetFloats(rightCameraPositionId, cameraPositionRight[0], cameraPositionRight[1], cameraPositionRight[2]);
+
+            Vector3[] rightCorners = new Vector3[4]; // lower left, upper left, upper right, lower right
+            Camera.main.CalculateFrustumCorners(new Rect(0, 0, 1, 1), Camera.main.farClipPlane, Camera.MonoOrStereoscopicEye.Right, rightCorners);
+
+            cs.SetFloats(rightFarLowerLeftId, rightCorners[0][0], rightCorners[0][1], rightCorners[0][2]);
+            cs.SetFloats(rightFarUpperLeftId, rightCorners[1][0], rightCorners[1][1], rightCorners[1][2]);
+            cs.SetFloats(rightFarUpperRightId, rightCorners[2][0], rightCorners[2][1], rightCorners[2][2]);
+            cs.SetFloats(rightFarLowerRightId, rightCorners[3][0], rightCorners[3][1], rightCorners[3][2]);
+        }
+        else
+				{
+            Vector3 cameraPosition = Camera.main.transform.position;
+            cs.SetFloats(cameraPositionId, cameraPosition[0], cameraPosition[1], cameraPosition[2]);
+
+            Vector3[] corners = new Vector3[4]; // lower left, upper left, upper right, lower right
+            Camera.main.CalculateFrustumCorners(new Rect(0, 0, 1, 1), Camera.main.farClipPlane, Camera.MonoOrStereoscopicEye.Mono, corners);
+
+            cs.SetFloats(farLowerLeftId, corners[0][0], corners[0][1], corners[0][2]);
+            cs.SetFloats(farUpperLeftId, corners[1][0], corners[1][1], corners[1][2]);
+            cs.SetFloats(farUpperRightId, corners[2][0], corners[2][1], corners[2][2]);
+            cs.SetFloats(farLowerRightId, corners[3][0], corners[3][1], corners[3][2]);
+        }
 
         // Set min / max blur radius parameters - these are dependent on resolution / vertical field of view
-        int2 blurRadiusLimits = BlurRadiusLimits(new(resolution.x, resolution.y));
+        int2 blurRadiusLimits = BlurRadiusLimits(psfStack, new(resolution.x, resolution.y));
         minMaxBlurRadiusCurrent = blurRadiusLimits;
         cs.SetInt(minBlurRadiusCurrentId, blurRadiusLimits[0]);
         cs.SetInt(maxBlurRadiusCurrentId, blurRadiusLimits[1]);
+
+        if (separateAberrations)
+				{
+            int2 rightBlurRadiusLimits = BlurRadiusLimits(rightPsfStack, new(resolution.x, resolution.y));
+            rightMinMaxBlurRadiusCurrent = rightBlurRadiusLimits;
+            cs.SetInt(rightMinBlurRadiusCurrentId, rightBlurRadiusLimits[0]);
+            cs.SetInt(rightMaxBlurRadiusCurrentId, rightBlurRadiusLimits[1]);
+        }
 
         // Set aperture diameter / focus distance evaluation range uniforms
         cs.SetInt(numObjectDioptresId, psfStack.objectDioptres.Count);
@@ -266,6 +340,16 @@ public class AberrationRenderPass : ScriptableRenderPass
         psfTexture?.Release();
         psfTextureLayerExtentsBuffer?.Release();
 
+        if (separateAberrations)
+				{
+            rightPsfParamsBuffer?.Release();
+            rightPsfWeightsBuffer?.Release();
+            rightInterpolatedPsfParamsBuffer?.Release();
+            rightPsfInterpolationBuffer?.Release();
+            rightPsfTexture?.Release();
+            rightPsfTextureLayerExtentsBuffer?.Release();
+				}
+
         // Create Buffers for PSF interpolation
         int psfParamStructSize = Marshal.SizeOf<PsfParam>();
         psfParamsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, psfStack.PSFCount(), psfParamStructSize);
@@ -282,6 +366,21 @@ public class AberrationRenderPass : ScriptableRenderPass
         int psfInterpolationBufferSize = 1 << 10;
         psfInterpolationBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, psfInterpolationBufferSize, sizeof(uint));
         psfInterpolationBuffer.name = "PSF Interpolation Buffer";
+
+        if (separateAberrations)
+				{
+            rightPsfParamsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, rightPsfStack.PSFCount(), psfParamStructSize);
+            rightPsfParamsBuffer.name = "PSF Parameters (Right)";
+
+            rightPsfWeightsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, rightPsfStack.TotalWeights(), sizeof(float));
+            rightPsfWeightsBuffer.name = "PSF Weights Buffer (Right)";
+
+            rightInterpolatedPsfParamsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, rightPsfStack.InterpolatedPSFCount(), interpolatedPsfParamStructSize);
+            rightInterpolatedPsfParamsBuffer.name = "Interpolated PSF Parameters (Right)";
+
+            rightPsfInterpolationBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, psfInterpolationBufferSize, sizeof(uint));
+            rightPsfInterpolationBuffer.name = "PSF Interpolation Buffer (Right)";
+        }
 
         PsfParam[] CreatePsfParamBuffer(PSFStack stack)
         {
@@ -464,6 +563,27 @@ public class AberrationRenderPass : ScriptableRenderPass
         uint[] csPsfInterpolationBuffer = CreatePsfInterpolationBuffer(csInterpolatedPsfParamsBuffer);
         psfInterpolationBuffer.SetData(csPsfInterpolationBuffer);
 
+        PsfParam[] csRightPsfParamsBuffer = null;
+        float[] csRightPsfWeightsBuffer = null;
+        InterpolatedPsfParam[] csRightInterpolatedPsfParamsBuffer = null;
+        uint[] csRightPsfInterpolationBuffer = null;
+
+        if (separateAberrations)
+				{
+            csRightPsfParamsBuffer = CreatePsfParamBuffer(rightPsfStack);
+            rightPsfParamsBuffer.SetData(csRightPsfParamsBuffer);
+
+            csRightPsfWeightsBuffer = CreatePsfWeightBuffer(rightPsfStack);
+            rightPsfWeightsBuffer.SetData(csRightPsfWeightsBuffer);
+
+            // Interpolate blur radius over aperture diameter / focus distance. 
+            csRightInterpolatedPsfParamsBuffer = CreateInterpolatedPsfParamBuffer(rightPsfStack, 1.0f / focusDistance, apertureDiameter);
+            rightInterpolatedPsfParamsBuffer.SetData(csRightInterpolatedPsfParamsBuffer);
+
+            csRightPsfInterpolationBuffer = CreatePsfInterpolationBuffer(csRightInterpolatedPsfParamsBuffer);
+            rightPsfInterpolationBuffer.SetData(csRightPsfInterpolationBuffer);
+        }
+
         int numSlices = CalculateNumSlices(psfStack, new(resolution.x, resolution.y), Camera.main.fieldOfView);
         psfTexture = new RenderTexture(blurRadiusLimits[1] * 2 + 1, blurRadiusLimits[1] * 2 + 1, 0, RenderTextureFormat.RGB111110Float)
         {
@@ -478,7 +598,26 @@ public class AberrationRenderPass : ScriptableRenderPass
         psfTextureLayerExtentsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numSlices, sizeof(uint));
         psfTextureLayerExtentsBuffer.name = "PSF Texture Layer Extents";
 
-        uint[] CreatePsfTextureLayerExtentsBuffer(InterpolatedPsfParam[] interpolatedPsfParams, uint[] psfInterpolationBuffer, int numLayers)
+        int rightNumSlices = 0;
+        if (separateAberrations)
+				{
+            rightNumSlices = CalculateNumSlices(rightPsfStack, new(resolution.x, resolution.y), Camera.main.fieldOfView);
+            rightPsfTexture = new RenderTexture(rightMinMaxBlurRadiusCurrent[1] * 2 + 1, rightMinMaxBlurRadiusCurrent[1] * 2 + 1, 0, RenderTextureFormat.RGB111110Float)
+            {
+                enableRandomWrite = true,
+                dimension = TextureDimension.Tex3D,
+                volumeDepth = rightNumSlices,
+                useMipMap = false,
+                wrapMode = TextureWrapMode.Clamp,
+                filterMode = FilterMode.Bilinear
+            };
+
+            rightPsfTextureLayerExtentsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, rightNumSlices, sizeof(uint));
+            rightPsfTextureLayerExtentsBuffer.name = "PSF Texture Layer Extents (Right)";
+        }
+
+
+        uint[] CreatePsfTextureLayerExtentsBuffer(PSFStack stack, InterpolatedPsfParam[] interpolatedPsfParams, uint[] psfInterpolationBuffer, int numLayers)
         {
             uint[] psfTextureLayerExtents = new uint[numLayers];
             for (int layerId = 0; layerId < numLayers; layerId += 1)
@@ -490,8 +629,8 @@ public class AberrationRenderPass : ScriptableRenderPass
                 float psfIdx = psfId + (float)(layerId - s) / (float)(n);
                 int lowerPsfIdx = Mathf.FloorToInt(psfIdx);
                 int upperPsfIdx = Mathf.CeilToInt(psfIdx);
-                lowerPsfIdx = Mathf.Clamp(lowerPsfIdx, 0, psfStack.objectDioptres.Count - 1);
-                upperPsfIdx = Mathf.Clamp(upperPsfIdx, 0, psfStack.objectDioptres.Count - 1);
+                lowerPsfIdx = Mathf.Clamp(lowerPsfIdx, 0, stack.objectDioptres.Count - 1);
+                upperPsfIdx = Mathf.Clamp(upperPsfIdx, 0, stack.objectDioptres.Count - 1);
 
                 float maxBlurRadius = 0.0f;
                 for (int c = 0; c < 3; c += 1)
@@ -508,13 +647,25 @@ public class AberrationRenderPass : ScriptableRenderPass
             }
             return psfTextureLayerExtents;
         }
-        uint[] csPsfTextureLayerExtentsBuffer = CreatePsfTextureLayerExtentsBuffer(csInterpolatedPsfParamsBuffer, csPsfInterpolationBuffer, numSlices);
+
+        uint[] csPsfTextureLayerExtentsBuffer = CreatePsfTextureLayerExtentsBuffer(psfStack, csInterpolatedPsfParamsBuffer, csPsfInterpolationBuffer, numSlices);
         psfTextureLayerExtentsBuffer.SetData(csPsfTextureLayerExtentsBuffer);
+
+        if (separateAberrations)
+				{
+            uint[] csRightPsfTextureLayerExtentsBuffer = CreatePsfTextureLayerExtentsBuffer(rightPsfStack, csRightInterpolatedPsfParamsBuffer, csRightPsfInterpolationBuffer, rightNumSlices);
+            rightPsfTextureLayerExtentsBuffer.SetData(csRightPsfTextureLayerExtentsBuffer);
+        }
 
         if (!psfTexture.Create())
         {
             Debug.LogError("Unable to create 3D PSF texture");
         }
+
+        if (separateAberrations && !rightPsfTexture.Create())
+				{
+            Debug.LogError("Unable to create 3D PSF texture (right)");
+				}
 
         psfTextureDirty = true;
     }
@@ -522,7 +673,7 @@ public class AberrationRenderPass : ScriptableRenderPass
     void SetParams(Vector2Int newResolution)
     {
         resolution = newResolution;
-        Debug.Log("Resolution changed to " + resolution.ToString() + " in " + (isPlaying ? "play mode" : "editor mode"));
+        Debug.Log("Resolution changed to " + resolution.ToString() + " in " + (usingXR ? "play mode" : "editor mode"));
         numTiles = new Vector2Int((resolution.x - 1) / TILE_SIZE + 1, (resolution.y - 1) / TILE_SIZE + 1);
         cs.SetInts(resolutionId, new[] { resolution.x, resolution.y });
         cs.SetInts(numTilesId, new[] { numTiles.x, numTiles.y });
@@ -532,9 +683,9 @@ public class AberrationRenderPass : ScriptableRenderPass
         tileFragmentCountBuffer?.Release();
         tileSortBuffer?.Release();
 
-        fragmentBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, resolution.x * resolution.y * (isPlaying ? 2 : 1), FragmentDataSize);
-        tileFragmentCountBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numTiles.x * numTiles.y * (isPlaying ? 2 : 1), TileFragmentCountSize);
-        tileSortBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numTiles.x * numTiles.y * TILE_MAX_FRAGMENTS * (isPlaying ? 2 : 1), SortIndexSize);
+        fragmentBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, resolution.x * resolution.y * (usingXR ? 2 : 1), FragmentDataSize);
+        tileFragmentCountBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numTiles.x * numTiles.y * (usingXR ? 2 : 1), TileFragmentCountSize);
+        tileSortBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, numTiles.x * numTiles.y * TILE_MAX_FRAGMENTS * (usingXR ? 2 : 1), SortIndexSize);
 
         RecalculateScaledPSFs(newResolution);
         RecalculatePSFTexture(newResolution);
@@ -550,12 +701,12 @@ public class AberrationRenderPass : ScriptableRenderPass
         return BlurRadiusPixels(psf.blurRadiusDeg, resolution, fovy);
     }
 
-    int2 BlurRadiusLimits(int2 resolution)
+    int2 BlurRadiusLimits(PSFStack stack, int2 resolution)
     {
         float fovy = Camera.main.fieldOfView;
         int minBlurRadius = int.MaxValue;
         int maxBlurRadius = int.MinValue;
-        psfStack.Iterate((idx, psf) =>
+        stack.Iterate((idx, psf) =>
         {
             float blurRadius = BlurRadiusPixels(psf, resolution, fovy);
             minBlurRadius = Mathf.Min(minBlurRadius, Mathf.FloorToInt(blurRadius));
@@ -681,8 +832,33 @@ public class AberrationRenderPass : ScriptableRenderPass
         BufferHandle psfInterpolationHandle = renderGraph.ImportBuffer(psfInterpolationBuffer);
         BufferHandle psfTextureLayerExtentsHandle = renderGraph.ImportBuffer(psfTextureLayerExtentsBuffer);
 
+
+        BufferHandle rightPsfWeightsHandle = new();
+        BufferHandle rightPsfParamsHandle = new();
+        BufferHandle rightInterpolatedPsfParamsHandle = new();
+        BufferHandle rightPsfInterpolationHandle = new();
+        BufferHandle rightPsfTextureLayerExtentsHandle = new();
+
+        if (separateAberrations)
+        {
+            rightPsfWeightsHandle = renderGraph.ImportBuffer(rightPsfWeightsBuffer);
+            rightPsfParamsHandle = renderGraph.ImportBuffer(rightPsfParamsBuffer);
+            rightInterpolatedPsfParamsHandle = renderGraph.ImportBuffer(rightInterpolatedPsfParamsBuffer);
+            rightPsfInterpolationHandle = renderGraph.ImportBuffer(rightPsfInterpolationBuffer);
+            rightPsfTextureLayerExtentsHandle = renderGraph.ImportBuffer(rightPsfTextureLayerExtentsBuffer);
+        }
+
         RTHandle psfImageRTHandle = RTHandles.Alloc(psfTexture);
         TextureHandle psfImageHandle = renderGraph.ImportTexture(psfImageRTHandle);
+        
+        RTHandle rightPsfImageRTHandle = null;
+        TextureHandle rightPsfImageHandle = new();
+
+        if (separateAberrations)
+				{
+            rightPsfImageRTHandle = RTHandles.Alloc(rightPsfTexture);
+            rightPsfImageHandle = renderGraph.ImportTexture(rightPsfImageRTHandle); 
+        }
 
         if (psfTextureDirty)
         {
@@ -691,16 +867,16 @@ public class AberrationRenderPass : ScriptableRenderPass
                 passData.cs = cs;
                 passData.kernelIndex = interpolatePsfTextureIndex;
                 passData.bufferList = new()
-            {
+                {
                     (psfWeightsBufferId, psfWeightsHandle, AccessFlags.Read),
                     (psfParamsBufferId, psfParamsHandle, AccessFlags.Read),
                     (interpolatedPsfParamsBufferId, interpolatedPsfParamsHandle, AccessFlags.Read),
                     (psfInterpolationBufferId, psfInterpolationHandle, AccessFlags.Read),
-            };
+                };
                 passData.textureList = new()
-            {
-                (psfImageId, psfImageHandle, AccessFlags.Write)
-            };
+                {
+                    (psfImageId, psfImageHandle, AccessFlags.Write)
+                };
 
                 int maxBlurRadiusCurrent = minMaxBlurRadiusCurrent[1];
                 int RoundedDiv(int a, int b)
@@ -716,6 +892,39 @@ public class AberrationRenderPass : ScriptableRenderPass
                 builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
             }
 
+            if (separateAberrations)
+						{
+                using (var builder = renderGraph.AddComputePass("InterpolatePSFTexture (Right)", out PassData passData))
+                {
+                    passData.cs = cs;
+                    passData.kernelIndex = interpolatePsfTextureRightIndex;
+                    passData.bufferList = new()
+                    {
+                        (psfWeightsBufferId, rightPsfWeightsHandle, AccessFlags.Read),
+                        (psfParamsBufferId, rightPsfParamsHandle, AccessFlags.Read),
+                        (interpolatedPsfParamsBufferId, rightInterpolatedPsfParamsHandle, AccessFlags.Read),
+                        (psfInterpolationBufferId, rightPsfInterpolationHandle, AccessFlags.Read),
+                    };
+                    passData.textureList = new()
+                    {
+                        (psfImageId, rightPsfImageHandle, AccessFlags.Write)
+                    };
+
+                    int rightMaxBlurRadiusCurrent = rightMinMaxBlurRadiusCurrent[1];
+                    int RoundedDiv(int a, int b)
+                    {
+                        return Mathf.CeilToInt((float)a / (float)b);
+                    }
+
+                    int xyGroups = RoundedDiv(2 * rightMaxBlurRadiusCurrent + 1, 8);
+                    int numLayers = rightPsfTexture.volumeDepth;
+                    passData.threadGroups = new Vector3Int(xyGroups, xyGroups, numLayers);
+
+                    passData.Build(builder);
+                    builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
+                }
+            }
+
             psfTextureDirty = false;
         }
 
@@ -723,24 +932,25 @@ public class AberrationRenderPass : ScriptableRenderPass
         BufferHandle tileFragmentCountHandle = renderGraph.ImportBuffer(tileFragmentCountBuffer);
         BufferHandle tileSortHandle = renderGraph.ImportBuffer(tileSortBuffer);
 
-        int layers = isPlaying ? 2 : 1;
+        int layers = usingXR ? 2 : 1;
 
         using (var builder = renderGraph.AddComputePass("TileBufferBuild", out PassData passData))
         {
             passData.cs = cs;
-            passData.kernelIndex = isPlaying ? tileBufferBuildIndex : tileBufferBuildEditorIndex;
+            passData.kernelIndex = usingXR ? tileBufferBuildIndex : tileBufferBuildEditorIndex;
             passData.bufferList = new()
             {
                 (fragmentBufferId, fragmentHandle, AccessFlags.Write),
                 (tileFragmentCountBufferId, tileFragmentCountHandle, AccessFlags.Write),
                 (tileSortBufferId, tileSortHandle, AccessFlags.Write),
 
-                (interpolatedPsfParamsBufferId, interpolatedPsfParamsHandle, AccessFlags.Read)
+                (interpolatedPsfParamsBufferId, interpolatedPsfParamsHandle, AccessFlags.Read),
+                (rightInterpolatedPsfParamsBufferId, separateAberrations ? rightInterpolatedPsfParamsHandle : interpolatedPsfParamsHandle, AccessFlags.Read)
             };
             passData.textureList = new()
             {
-                (isPlaying ? iColorArrayId : iColorId, srcCamColor, AccessFlags.Read),
-                (isPlaying ? iDepthArrayId : iDepthId, srcCamDepth, AccessFlags.Read),
+                (usingXR ? iColorArrayId : iColorId, srcCamColor, AccessFlags.Read),
+                (usingXR ? iDepthArrayId : iDepthId, srcCamDepth, AccessFlags.Read),
             };
             passData.threadGroups = new Vector3Int(numTiles.x, numTiles.y, layers);
 
@@ -784,7 +994,7 @@ public class AberrationRenderPass : ScriptableRenderPass
         using (var builder = renderGraph.AddComputePass("Convolve", out PassData passData))
         {
             passData.cs = cs;
-            passData.kernelIndex = isPlaying ? convolveIndex : convolveEditorIndex;
+            passData.kernelIndex = usingXR ? convolveIndex : convolveEditorIndex;
             passData.bufferList = new()
             {
                 (fragmentBufferId, fragmentHandle, AccessFlags.Read),
@@ -793,11 +1003,15 @@ public class AberrationRenderPass : ScriptableRenderPass
 
                 (interpolatedPsfParamsBufferId, interpolatedPsfParamsHandle, AccessFlags.Read),
                 (psfTextureLayerExtentsId, psfTextureLayerExtentsHandle, AccessFlags.Read),
+
+                (rightInterpolatedPsfParamsBufferId, separateAberrations ? rightInterpolatedPsfParamsHandle : interpolatedPsfParamsHandle, AccessFlags.Read),
+                (rightPsfTextureLayerExtentsId, separateAberrations ? rightPsfTextureLayerExtentsHandle : psfTextureLayerExtentsHandle, AccessFlags.Read)
             };
             passData.textureList = new()
             {
                 (psfTextureId, psfImageHandle, AccessFlags.Read),
-                (isPlaying ? oColorArrayId : oColorId, dst, AccessFlags.Write),
+                (rightPsfTextureId, separateAberrations ? rightPsfImageHandle : psfImageHandle, AccessFlags.Read),
+                (usingXR ? oColorArrayId : oColorId, dst, AccessFlags.Write),
             };
             passData.threadGroups = new Vector3Int(numTiles.x, numTiles.y, layers);
 

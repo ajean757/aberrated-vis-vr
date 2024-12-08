@@ -6,6 +6,7 @@
 #pragma kernel Convolve
 #pragma kernel BlurTest
 #pragma kernel InterpolatePSFTexture
+#pragma kernel InterpolatePSFTextureRight
 
 #pragma kernel TileBufferBuildEditor
 #pragma kernel ConvolveEditor
@@ -15,31 +16,36 @@
 #define FLT_MAX 3.402823466e+38F
 
 /* These must be synced with constants in the render pass */
-#define TILE_SIZE 8
-#define SHARED_ARRAY_SIZE 64 // TILE_SIZE * TILE_SIZE
+#define TILE_SIZE 16
+#define SHARED_ARRAY_SIZE 256 // TILE_SIZE * TILE_SIZE
 
 #define TILE_MAX_FRAGMENTS 4096
-#define SORT_GROUP_SIZE 256
+#define SORT_GROUP_SIZE 1024
 
-#define SORT_ELEMENTS_PER_THREAD 8 // TILE_MAX_FRAGMENTS / SORTGROUP_SIZE / 2
+#define SORT_ELEMENTS_PER_THREAD 2 // TILE_MAX_FRAGMENTS / SORTGROUP_SIZE / 2
 
 #define BOX_BLUR_RADIUS 8
 #define BOX_BLUR_WEIGHT (1.0f / 289.0f) // 1 / (2 * BOX_BLUR_RADIUS + 1)^2
 
 #define CEIL_DIV(x, y) ((x - 1) / y + 1)
 
+#define RIGHT_EYE (eyeIndex == 1 && separateAberrations)
+
 //CBUFFER_START(TileSplatParams)
 cbuffer TileSplatParams
 {
-    // singlePass = true implies we are doing both eyes at once
-    bool singlePass;
+    bool separateAberrations;
 
     uint2 numTiles;
     uint2 resolution;
 
     uint minBlurRadiusCurrent;
     uint maxBlurRadiusCurrent;
+
+    uint rightMinBlurRadiusCurrent;
+    uint rightMaxBlurRadiusCurrent;
     
+    // assumed that sampling parameters are always same, which is probably reasonable
     uint numObjectDioptres;
     float objectDioptresMin;
     float objectDioptresMax;
@@ -65,10 +71,17 @@ cbuffer CameraData
     float farClip;
     
     float3 cameraPosition; // world-space
+    float3 rightCameraPosition;
+
     float3 farLowerLeft; // view-space
     float3 farUpperLeft;
     float3 farUpperRight;
     float3 farLowerRight;
+
+    float3 rightFarLowerLeft; // view-space
+    float3 rightFarUpperLeft;
+    float3 rightFarUpperRight;
+    float3 rightFarLowerRight;
 };
 
 struct FragmentData
@@ -137,6 +150,13 @@ Texture3D<float4> psfTexture;
 // a small optimization to reduce # of texture fetches; cull away fetches to parts of PSF texture we know must be black
 StructuredBuffer<uint> psfTextureLayerExtents;
 
+// support for stereo
+StructuredBuffer<InterpolatedPsfParam> rightInterpolatedPsfParams;
+// HLSL doesn't support Texture3DArray natively, so have to bind two textures
+Texture3D<float4> rightPsfTexture;
+StructuredBuffer<uint> rightPsfTextureLayerExtents;
+
+
 float3 ApertureIndices(float aperture)
 {
     float frac = (aperture - aperturesMin) / aperturesStep;
@@ -199,7 +219,23 @@ float LerpPsfRadius(float3 d, uint c)
     return lerp(psfRadius0, psfRadius1, frac(d[2]));
 }
 
-bool IsSamplePadding(int2 sampleCoords, float3 psfIds)
+float LerpPsfRadiusStereo(float3 d, uint c, uint eyeIndex) 
+{
+    if (RIGHT_EYE)
+    {
+        float psfRadius0 = rightInterpolatedPsfParams[PsfParamArrayIndex((uint) d[0], c)].blurRadius;
+        float psfRadius1 = rightInterpolatedPsfParams[PsfParamArrayIndex((uint) d[1], c)].blurRadius;
+        return lerp(psfRadius0, psfRadius1, frac(d[2]));
+    }
+    else
+    {
+        float psfRadius0 = interpolatedPsfParams[PsfParamArrayIndex((uint) d[0], c)].blurRadius;
+        float psfRadius1 = interpolatedPsfParams[PsfParamArrayIndex((uint) d[1], c)].blurRadius;
+        return lerp(psfRadius0, psfRadius1, frac(d[2]));
+    }
+}
+
+bool IsSamplePadding(int2 sampleCoords, float3 psfIds, uint stereoMaxBlurRadiusCurrent)
 {
     // calculate largest blur radius across all channels
     float maxBlurRadius = 0.0f;
@@ -208,9 +244,9 @@ bool IsSamplePadding(int2 sampleCoords, float3 psfIds)
         float blurRadius = LerpPsfRadius(psfIds, i);
         maxBlurRadius = max(maxBlurRadius, blurRadius);
     }
-    
-    int lowerLeftXY = int(maxBlurRadiusCurrent) - maxBlurRadius;
-    int upperRightXY = int(maxBlurRadiusCurrent) + maxBlurRadius;
+
+    int lowerLeftXY = int(stereoMaxBlurRadiusCurrent) - maxBlurRadius;
+    int upperRightXY = int(stereoMaxBlurRadiusCurrent) + maxBlurRadius;
     int2 lowerLeft = int2(lowerLeftXY, lowerLeftXY);
     int2 upperRight = int2(upperRightXY, upperRightXY);
     bool isPadding = any(sampleCoords < lowerLeft) || any(sampleCoords > upperRight);
@@ -289,10 +325,10 @@ float PsfWeight(uint psfParamIdx, uint r, uint2 sc)
     return (r >= minR && r <= maxR) ? psfWeights[PsfWeightBufferIndex(psfParamIdx, r, minR, sc)] : 0.0f;
 }
 
-float SamplePsfWeightBufferPadded(float3 d, float3 a, float3 f, uint c, uint r, uint2 scp)
+float SamplePsfWeightBufferPadded(float3 d, float3 a, float3 f, uint c, uint r, uint2 scp, uint stereoMaxBlurRadiusCurrent)
 {
     // remove padding from sample coordinates
-    int2 sc = int2(scp) - maxBlurRadiusCurrent + r;
+    int2 sc = int2(scp) - stereoMaxBlurRadiusCurrent + r;
     
     // determine if we are outside the spatial extent of the PSF entry we are sampling
     int2 lowerLeft = int2(0, 0);
@@ -318,11 +354,11 @@ float SamplePsfWeightBufferPadded(float3 d, float3 a, float3 f, uint c, uint r, 
     );
 }
 
-float SamplePsfWeightBufferPadded(float3 d, float3 a, float3 f, uint c, float3 r, uint2 scp)
+float SamplePsfWeightBufferPadded(float3 d, float3 a, float3 f, uint c, float3 r, uint2 scp, uint stereoMaxBlurRadiusCurrent)
 {
     return lerp(
-        SamplePsfWeightBufferPadded(d, a, f, c, (uint) r[0], scp),
-        SamplePsfWeightBufferPadded(d, a, f, c, (uint) r[1], scp),
+        SamplePsfWeightBufferPadded(d, a, f, c, (uint) r[0], scp, stereoMaxBlurRadiusCurrent),
+        SamplePsfWeightBufferPadded(d, a, f, c, (uint) r[1], scp, stereoMaxBlurRadiusCurrent),
         frac(r[2])
     );
 }
@@ -333,8 +369,8 @@ float SamplePsfWeightBufferPadded(float3 d, float3 a, float3 f, uint c, float3 r
 
 // Interpolate PSFs to squeeze away the aperture diameter / focus distance dimensions, and also rearrange data into a 3D texture so that
 // we can utilize hardware texture samplers to get good performance
-[numthreads(INTERPOLATION_GROUP_SIZE, INTERPOLATION_GROUP_SIZE, 1)]
-void InterpolatePSFTexture(uint3 id_in_tile : SV_DispatchThreadID)
+
+void InterpolatePSFTextureHelper(uint3 id_in_tile, uint eyeIndex)
 {
     // psfImage[id_in_tile] = float4(1.0f, 0.0f, 0.0f, 1.0f);
     // return; 
@@ -353,8 +389,9 @@ void InterpolatePSFTexture(uint3 id_in_tile : SV_DispatchThreadID)
         // psfImage[id_in_tile] = float4(1.0f, 0.0f, 0.0f, 1.0f);
         return;
     }
-        
-    if (IsSamplePadding(sampleCoords, psfIds))
+    
+    uint stereoMaxBlurRadiusCurrent = RIGHT_EYE ? rightMaxBlurRadiusCurrent : maxBlurRadiusCurrent;
+    if (IsSamplePadding(sampleCoords, psfIds, stereoMaxBlurRadiusCurrent))
     {
         // psfImage[id_in_tile] = float4(0.0f, 1.0f, 0.0f, 1.0f);
         return;
@@ -369,12 +406,27 @@ void InterpolatePSFTexture(uint3 id_in_tile : SV_DispatchThreadID)
         float rFrac = LerpPsfRadius(psfIds, c);
         // textureValue[c] = rFrac;
         float3 r = float3(floor(rFrac), ceil(rFrac), rFrac);
-        textureValue[c] = SamplePsfWeightBufferPadded(psfIds, apertureIds, focusIds, c, r, sampleCoords);
+        textureValue[c] = SamplePsfWeightBufferPadded(psfIds, apertureIds, focusIds, c, r, sampleCoords, stereoMaxBlurRadiusCurrent);
     }
     
     psfImage[id_in_tile] = textureValue;
     
 }
+
+[numthreads(INTERPOLATION_GROUP_SIZE, INTERPOLATION_GROUP_SIZE, 1)]
+void InterpolatePSFTexture(uint3 id_in_tile : SV_DispatchThreadID)
+{
+    InterpolatePSFTextureHelper(id_in_tile, 0);
+}
+
+[numthreads(INTERPOLATION_GROUP_SIZE, INTERPOLATION_GROUP_SIZE, 1)]
+void InterpolatePSFTextureRight(uint3 id_in_tile : SV_DispatchThreadID)
+{
+    InterpolatePSFTextureHelper(id_in_tile, 1);
+}
+
+
+
 
 // Index for fragmentBuffer
 uint FragmentArrayIndex(const uint2 fragmentCoord, const uint eyeIndex)
@@ -420,34 +472,39 @@ float LinearEyeDepth(float rawdepth)
     return 1.0 / (z * rawdepth + w);
 }
 
-float ComputePsfIndex(const uint2 screenPosition, const float depth)
+float ComputePsfIndex(const uint2 screenPosition, const float depth, const uint eyeIndex)
 {
     // depth buffer only provides distance along camera view direction, we have to take into account xy screen position ourselves
     float zDistance = LinearEyeDepth(depth);
     
     float2 interp = float2((float) screenPosition.x / (float) resolution.x, (float) screenPosition.y / (float) resolution.y);
     
-    float3 a = lerp(farLowerLeft, farLowerRight, interp.xxx);
-    float3 b = lerp(farUpperLeft, farUpperRight, interp.xxx);
+    float3 ll = RIGHT_EYE ? rightFarLowerLeft : farLowerLeft;
+    float3 lr = RIGHT_EYE ? rightFarLowerRight : farLowerRight;
+    float3 ul = RIGHT_EYE ? rightFarUpperLeft : farUpperLeft;
+    float3 ur = RIGHT_EYE ? rightFarUpperRight : farUpperRight;
+
+    float3 a = lerp(ll, lr, interp.xxx);
+    float3 b = lerp(ul, ur, interp.xxx);
     float3 c = lerp(a, b, interp.yyy);
     
     return (zDistance / farClip) * length(c);
 }
 
-float3 BlurRadii(float depth, uint channel)
+float3 BlurRadii(float depth, uint channel, uint eyeIndex)
 {
     float3 psfIds = ObjectIndices(depth);
-    float blurRadius = LerpPsfRadius(psfIds, channel);
+    float blurRadius = LerpPsfRadiusStereo(psfIds, channel, eyeIndex);
     return float3(floor(blurRadius), ceil(blurRadius), blurRadius);
 }
 
 // max radii for each color channel
-float3 MaxBlurRadii(float psfIndex)
+float3 MaxBlurRadii(float psfIndex, uint eyeIndex)
 {
     float3 result = float3(0.0f, 0.0f, 0.0f);
-    result = max(result, BlurRadii(psfIndex, 0));
-    result = max(result, BlurRadii(psfIndex, 1));
-    result = max(result, BlurRadii(psfIndex, 2));
+    result = max(result, BlurRadii(psfIndex, 0, eyeIndex));
+    result = max(result, BlurRadii(psfIndex, 1, eyeIndex));
+    result = max(result, BlurRadii(psfIndex, 2, eyeIndex));
     
     return result;
 }
@@ -513,8 +570,8 @@ void TileBufferBuildHelper(const uint3 id, const float3 color, const float depth
     FragmentData fragmentData;
     fragmentData.color = color;
     fragmentData.screenPosition = float2(fragmentCoord);
-    fragmentData.psfIndex = ComputePsfIndex(fragmentCoord, depth);
-    fragmentData.blurRadius = ceil(MaxBlurRadii(fragmentData.psfIndex).z);
+    fragmentData.psfIndex = ComputePsfIndex(fragmentCoord, depth, eyeIndex);
+    fragmentData.blurRadius = ceil(MaxBlurRadii(fragmentData.psfIndex, eyeIndex).z);
     
     // if (any(fragmentCoord != resolution / 2))
     // {
@@ -790,28 +847,30 @@ float psfIndexToLayerId(const vec3 d)
 // Note that vPsfIndex is containing depth at beginning, then only gets converted to dioptres at the end of tile_buffer_build
 // Our tile buffer build is less complex, so we just keep it as depth all the way through until we need to sample
 // Csoba reference: sphericalCoordsToPsfIndex (above)
-float RealPsfIndex(float psfIndex) {
+float RealPsfIndex(float psfIndex, uint eyeIndex) {
     // psfIndex = depth
     float3 psfIds = ObjectIndices(psfIndex);
     // psfIds = index into object dioptres
 
     // layers info stored in R channel only
     uint idx = PsfParamArrayIndex((uint) psfIds[0], 0);
-    float startLayer = (float) interpolatedPsfParams[idx].startLayer;
-    float numLayers = (float) interpolatedPsfParams[idx].numLayers;
+
+    
+    float startLayer = (float) (RIGHT_EYE ? rightInterpolatedPsfParams[idx].startLayer : interpolatedPsfParams[idx].startLayer);
+    float numLayers = (float) (RIGHT_EYE ? rightInterpolatedPsfParams[idx].numLayers : interpolatedPsfParams[idx].numLayers);
 
     return startLayer + numLayers * frac(psfIds[2]);
 }
 
-float3 SamplePsf(const uint2 fragmentCoord, const FragmentData fragmentData, const uint eyeIndex)
+float3 SamplePsf(const uint2 fragmentCoord, const FragmentData fragmentData, uint eyeIndex)
 {
     // PSFs are centered in 3D texture
-    uint maxPsfRadius = maxBlurRadiusCurrent;
-    float psfIndex = RealPsfIndex(fragmentData.psfIndex);
+    uint maxPsfRadius = RIGHT_EYE ? rightMaxBlurRadiusCurrent : maxBlurRadiusCurrent;
+    float psfIndex = RealPsfIndex(fragmentData.psfIndex, eyeIndex);
     
     int2 delta = int2(fragmentCoord.x - fragmentData.screenPosition.x, fragmentCoord.y - fragmentData.screenPosition.y);
-    uint lowerLayerExtent = psfTextureLayerExtents[floor(psfIndex)];
-    uint upperLayerExtent = psfTextureLayerExtents[ceil(psfIndex)];
+    uint lowerLayerExtent = RIGHT_EYE ? rightPsfTextureLayerExtents[floor(psfIndex)] : psfTextureLayerExtents[floor(psfIndex)];
+    uint upperLayerExtent = RIGHT_EYE ? rightPsfTextureLayerExtents[ceil(psfIndex)] : psfTextureLayerExtents[ceil(psfIndex)];
     uint maxExtent = max(lowerLayerExtent, upperLayerExtent);
     
     if (any(abs(delta) > int2(maxExtent, maxExtent)))
@@ -820,9 +879,17 @@ float3 SamplePsf(const uint2 fragmentCoord, const FragmentData fragmentData, con
     }
     
     float3 texCoordIndices = float3(fragmentCoord.x - fragmentData.screenPosition.x + maxPsfRadius, fragmentCoord.y - fragmentData.screenPosition.y + maxPsfRadius, psfIndex);
-    
+
     uint width, height, depth;
-    psfTexture.GetDimensions(width, height, depth);
+    if (RIGHT_EYE) 
+    {
+        rightPsfTexture.GetDimensions(width, height, depth);
+    }
+    else 
+    {
+        psfTexture.GetDimensions(width, height, depth);
+    }
+    
     
     // offset by half-texel since we want to sample exactly at the center of pixel
     float3 texCoords = (texCoordIndices + float3(0.5f, 0.5f, 0.5f)) / float3(width, height, depth);
@@ -834,7 +901,7 @@ float3 SamplePsf(const uint2 fragmentCoord, const FragmentData fragmentData, con
     }
     else
     {
-        return psfTexture.SampleLevel(samplerpsfTexture, texCoords, 0).rgb;
+        return RIGHT_EYE ? rightPsfTexture.SampleLevel(samplerpsfTexture, texCoords, 0).rgb : psfTexture.SampleLevel(samplerpsfTexture, texCoords, 0).rgb;
     }
 }
 
@@ -866,6 +933,7 @@ float3 ConvolveHelper(uint3 id)
     // return;
     // oColor[fragmentCoord] = float4(fragmentCount, 0.0f, 0.0f, 1.0f);
     // return;
+    // return float3(fragmentCount, 0.0f, 0.0f);
     
     /* Depth sorted alpha blending using premultiplied alpha */
     float3 result = float3(0, 0, 0);

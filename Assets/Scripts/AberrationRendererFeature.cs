@@ -16,6 +16,9 @@ public class AberrationRendererFeature : ScriptableRendererFeature
     [FolderDropdown]
     public string PSFSet;
 
+    [FolderDropdown]
+    public string RightPSFSet;
+
     //[SerializeField] private Shader shader;
     [SerializeField] private ComputeShader computeShader;
     //private Material material;
@@ -31,6 +34,7 @@ public class AberrationRendererFeature : ScriptableRendererFeature
         //aberrationRenderPass = new AberrationRenderPass(material, settings, computeShader);
         settings = new();
         settings.PSFSet = PSFSet;
+        settings.RightPSFSet = RightPSFSet;
         aberrationRenderPass = new AberrationRenderPass(settings, computeShader);
         aberrationRenderPass.renderPassEvent = RenderPassEvent.BeforeRenderingPostProcessing;
     }
@@ -71,4 +75,5 @@ public class AberrationRendererFeature : ScriptableRendererFeature
 public class AberrationSettings
 {
     public string PSFSet;
+    public string RightPSFSet;
 }
