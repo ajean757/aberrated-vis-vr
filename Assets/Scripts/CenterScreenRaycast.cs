@@ -10,7 +10,6 @@ public class CenterScreenRaycast : MonoBehaviour
     private GameObject currentHitMarker; // The active hit marker instance
     public float centerScreenDepth; // Expose depth to other scripts
     public float GetCurrentDepth() => centerScreenDepth;
-    public ComputeShader computeShader;
     public bool markerOn = false;
     void Update()
     {

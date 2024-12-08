@@ -155,6 +155,8 @@ public class AberrationRenderPass : ScriptableRenderPass
 
     private static readonly int psfTextureLayerExtentsId = Shader.PropertyToID("psfTextureLayerExtents");
     private GraphicsBuffer psfTextureLayerExtentsBuffer;
+
+    public CenterScreenRaycast centerDepthScript;
     public RenderTexture GetPsfTexture()
     {
         return psfTexture;
