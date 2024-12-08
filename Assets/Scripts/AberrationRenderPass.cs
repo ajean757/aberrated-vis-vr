@@ -64,7 +64,7 @@ public class AberrationRenderPass : ScriptableRenderPass
 {
     // Defined consts in compute shader
     private const int TILE_SIZE = 8;
-    private const int TILE_MAX_FRAGMENTS = 1024;
+    private const int TILE_MAX_FRAGMENTS = 4096;
     private const int BOX_BLUR_RADIUS = 8;
 
     // Struct sizes in compute shader
