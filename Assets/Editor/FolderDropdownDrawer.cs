@@ -58,7 +58,7 @@ public class FolderDropdownDrawer : PropertyDrawer
             {
                 // normalize to use forward slash as directory separator
                 subDirectories[i] = subDirectories[i].Replace(Path.DirectorySeparatorChar, '/');
-                Debug.Log(subDirectories[i]);
+                //Debug.Log(subDirectories[i]);
             }
             
             folderNames = subDirectories;

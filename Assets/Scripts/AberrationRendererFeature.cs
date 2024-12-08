@@ -78,12 +78,12 @@ public class AberrationRendererFeature : ScriptableRendererFeature
     public void UpdateDepth(float newDepth)
     {
         depth = newDepth;
-        aberrationRenderPass.SetDepth(depth);
+        aberrationRenderPass?.SetDepth(depth);
     }
     public void UpdateAperture(float newAperture)
     {
         aperture = newAperture;
-        aberrationRenderPass.SetDepth(aperture);
+        aberrationRenderPass?.SetDepth(aperture);
     }
 }
 
