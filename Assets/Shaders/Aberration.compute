@@ -1,6 +1,7 @@
 // Each #kernel tells which function to compile; you can have many kernels
 //#pragma kernel FragmentBufferBuild
 #pragma kernel TileBufferBuild
+#pragma kernel TileBufferMerge
 #pragma kernel TileBufferSplat
 #pragma kernel SortFragments
 #pragma kernel Convolve
@@ -10,13 +11,17 @@
 #pragma kernel TileBufferBuildEditor
 #pragma kernel ConvolveEditor
 
+#pragma kernel CalculateDepthDiff
+
 //#pragma enable_cbuffer
 
 #define FLT_MAX 3.402823466e+38F
 
 /* These must be synced with constants in the render pass */
-#define TILE_SIZE 8
-#define SHARED_ARRAY_SIZE 64 // TILE_SIZE * TILE_SIZE
+#define TILE_SIZE 16
+#define SHARED_ARRAY_SIZE 256 // TILE_SIZE * TILE_SIZE
+
+#define MERGE_GROUP_SIZE 8
 
 #define TILE_MAX_FRAGMENTS 4096
 #define SORT_GROUP_SIZE 256
@@ -28,14 +33,18 @@
 
 #define CEIL_DIV(x, y) ((x - 1) / y + 1)
 
+// for merge
+#define COLOR_SIMILARITY_THRESHOLD 0.0f
+#define DEPTH_SIMILARITY_THRESHOLD 0.01f
+#define BLUR_SIZE_THRESHOLD 2
+
 //CBUFFER_START(TileSplatParams)
 cbuffer TileSplatParams
 {
-    // singlePass = true implies we are doing both eyes at once
-    bool singlePass;
-
     uint2 numTiles;
     uint2 resolution;
+
+    uint mergeIteration;
 
     uint minBlurRadiusCurrent;
     uint maxBlurRadiusCurrent;
@@ -77,6 +86,7 @@ struct FragmentData
     float2 screenPosition;
     float psfIndex; // depth of some kind
     float blurRadius;
+    uint fragmentSize; // number of merged fragments
 };
 
 RWStructuredBuffer<FragmentData> fragmentBuffer;
@@ -101,6 +111,9 @@ RWTexture2DArray<float4> oColorArray;
 
 // depth is stored in .x
 Texture2DArray<float2> iDepthArray;
+
+// used for visualizing
+RWTexture2DArray<float4> depthDiff;
 
 struct PsfParam {
     uint minBlurRadius; // px
@@ -376,22 +389,42 @@ void InterpolatePSFTexture(uint3 id_in_tile : SV_DispatchThreadID)
     
 }
 
+// supports up to 64x64 tiles
+static const uint MortonTable64[64] = 
+{
+  0x0000, 0x0001, 0x0004, 0x0005, 0x0010, 0x0011, 0x0014, 0x0015, 
+  0x0040, 0x0041, 0x0044, 0x0045, 0x0050, 0x0051, 0x0054, 0x0055, 
+  0x0100, 0x0101, 0x0104, 0x0105, 0x0110, 0x0111, 0x0114, 0x0115, 
+  0x0140, 0x0141, 0x0144, 0x0145, 0x0150, 0x0151, 0x0154, 0x0155, 
+  0x0400, 0x0401, 0x0404, 0x0405, 0x0410, 0x0411, 0x0414, 0x0415, 
+  0x0440, 0x0441, 0x0444, 0x0445, 0x0450, 0x0451, 0x0454, 0x0455, 
+  0x0500, 0x0501, 0x0504, 0x0505, 0x0510, 0x0511, 0x0514, 0x0515, 
+  0x0540, 0x0541, 0x0544, 0x0545, 0x0550, 0x0551, 0x0554, 0x0555, 
+};
+
+// Index for tileFragmentCountBuffer, linearize 2d tile coord
+uint TileCountArrayIndex(const uint2 tileCoord, const uint eyeIndex)
+{
+    return tileCoord.y * numTiles.x + tileCoord.x + eyeIndex * numTiles.x * numTiles.y;
+}
+
 // Index for fragmentBuffer
 uint FragmentArrayIndex(const uint2 fragmentCoord, const uint eyeIndex)
 {
-    return fragmentCoord.y * resolution.x + fragmentCoord.x + eyeIndex * resolution.x * resolution.y;
+    // z order source: http://graphics.stanford.edu/%7Eseander/bithacks.html
+    const uint tileIndex = TileCountArrayIndex(fragmentCoord / TILE_SIZE, eyeIndex);
+    const uint2 offset = fragmentCoord % TILE_SIZE;
+    const uint z = (MortonTable64[offset.y] << 1) | MortonTable64[offset.x];
+    return tileIndex * TILE_SIZE * TILE_SIZE + z;
+
+    //return tileIndex * TILE_SIZE * TILE_SIZE + offset.y * TILE_SIZE + offset.x;
+    //return fragmentCoord.y * resolution.x + fragmentCoord.x + eyeIndex * resolution.x * resolution.y;
 }
 
 // Index for tileSortBuffer, first index of fragment in that tile
 uint TileArrayIndex(const uint2 tileCoord, const uint eyeIndex)
 {
     return (tileCoord.y * numTiles.x + tileCoord.x + eyeIndex * numTiles.x * numTiles.y) * TILE_MAX_FRAGMENTS;
-}
-
-// Index for tileFragmentCountBuffer, linearize 2d tile coord
-uint TileCountArrayIndex(const uint2 tileCoord, const uint eyeIndex)
-{
-    return tileCoord.y * numTiles.x + tileCoord.x + eyeIndex * numTiles.x * numTiles.y;
 }
 
 bool IsValidTileCoord(const uint2 tileCoord)
@@ -439,6 +472,16 @@ float3 BlurRadii(float depth, uint channel)
     float3 psfIds = ObjectIndices(depth);
     float blurRadius = LerpPsfRadius(psfIds, channel);
     return float3(floor(blurRadius), ceil(blurRadius), blurRadius);
+}
+
+// max radii for each color channel
+float3 MinBlurRadii(float psfIndex)
+{
+    float3 result = BlurRadii(psfIndex, 0);
+    result = min(result, BlurRadii(psfIndex, 1));
+    result = min(result, BlurRadii(psfIndex, 2));
+    
+    return result;
 }
 
 // max radii for each color channel
@@ -515,6 +558,7 @@ void TileBufferBuildHelper(const uint3 id, const float3 color, const float depth
     fragmentData.screenPosition = float2(fragmentCoord);
     fragmentData.psfIndex = ComputePsfIndex(fragmentCoord, depth);
     fragmentData.blurRadius = ceil(MaxBlurRadii(fragmentData.psfIndex).z);
+    fragmentData.fragmentSize = 1;
     
     // if (any(fragmentCoord != resolution / 2))
     // {
@@ -528,26 +572,26 @@ void TileBufferBuildHelper(const uint3 id, const float3 color, const float depth
 
     const uint2 tileCoord = id.xy / TILE_SIZE;
     const uint2 threadId = id.xy % TILE_SIZE;
-    //const uint2 fragmentCoord = id.xy;
+    // //const uint2 fragmentCoord = id.xy;
 
-    //const uint fragmentIndex = FragmentArrayIndex(fragmentCoord);
-    const uint tileIndex = TileArrayIndex(tileCoord, eyeIndex);
+    // //const uint fragmentIndex = FragmentArrayIndex(fragmentCoord);
+    // const uint tileIndex = TileArrayIndex(tileCoord, eyeIndex);
     const uint countIndex = TileCountArrayIndex(tileCoord, eyeIndex);
 
-    //FragmentData fragmentData = fragmentBuffer[fragmentIndex];
+    // //FragmentData fragmentData = fragmentBuffer[fragmentIndex];
 
-    SortIndex sortIndex;
-    sortIndex.fragmentIndex = fragmentIndex;
-    sortIndex.depth = ComputeSortDepth(fragmentData.screenPosition, fragmentData.psfIndex);
+    // SortIndex sortIndex;
+    // sortIndex.fragmentIndex = fragmentIndex;
+    // sortIndex.depth = ComputeSortDepth(fragmentData.screenPosition, fragmentData.psfIndex);
 
-    const uint2 size = min(resolution - tileCoord * TILE_SIZE, uint2(TILE_SIZE, TILE_SIZE));
+    // const uint2 size = min(resolution - tileCoord * TILE_SIZE, uint2(TILE_SIZE, TILE_SIZE));
 
-    //tileSortBuffer[tileIndex + fragmentIndex] = sortIndex;
-    tileSortBuffer[tileIndex + threadId.y * size.x + threadId.x] = sortIndex;
+    // //tileSortBuffer[tileIndex + fragmentIndex] = sortIndex;
+    // tileSortBuffer[tileIndex + threadId.y * size.x + threadId.x] = sortIndex;
 
     if (all(threadId == 0))
     {
-        tileFragmentCountBuffer[countIndex] = size.x * size.y;
+        tileFragmentCountBuffer[countIndex] = 0;//size.x * size.y;
     }
 }
 
@@ -575,6 +619,73 @@ void TileBufferBuildEditor(uint3 id : SV_DispatchThreadID)
     TileBufferBuildHelper(id, color, depth);
 }
 
+[numthreads(MERGE_GROUP_SIZE, MERGE_GROUP_SIZE, 1)]
+void TileBufferMerge(uint3 id : SV_DispatchThreadID)
+{
+    const uint fragmentWidth = (2 << mergeIteration);
+    const uint2 fragmentCoord = id.xy * fragmentWidth;
+    const uint eyeIndex = id.z;
+
+    if (any(fragmentCoord + fragmentWidth > resolution))
+        return;
+
+    const uint fragmentIndex = FragmentArrayIndex(fragmentCoord, eyeIndex);
+    const uint stride = fragmentWidth * fragmentWidth / 4; //1 << (2 * mergeIteration);
+
+    FragmentData fragments[4] =
+    {
+        fragmentBuffer[fragmentIndex],
+        fragmentBuffer[fragmentIndex + stride],
+        fragmentBuffer[fragmentIndex + 2 * stride],
+        fragmentBuffer[fragmentIndex + 3 * stride]
+    };
+
+    if (fragments[0].fragmentSize != stride || fragments[1].fragmentSize != stride || fragments[2].fragmentSize != stride || fragments[3].fragmentSize != stride)
+        return;
+
+    // minBlurRadius is a measure of how sharp this merged fragment should be
+    // the less sharp the merged fragment would be, the more likely we are willing to merge
+    const float minBlurRadius = min
+    (
+        min(MinBlurRadii(fragments[0].psfIndex).z, MinBlurRadii(fragments[1].psfIndex).z), 
+        min(MinBlurRadii(fragments[2].psfIndex).z, MinBlurRadii(fragments[3].psfIndex).z)
+    );
+
+    if (minBlurRadius < BLUR_SIZE_THRESHOLD)
+        return;
+
+    const float3 colorThreshold = float3(0.0f, 0.0f, 0.0f);//minBlurRadius * COLOR_SIMILARITY_THRESHOLD;
+    const float depthThreshold = minBlurRadius * DEPTH_SIMILARITY_THRESHOLD;
+
+    if (any(abs(fragments[0].color - fragments[1].color) > colorThreshold) || 
+        any(abs(fragments[0].color - fragments[2].color) > colorThreshold) ||
+        any(abs(fragments[0].color - fragments[3].color) > colorThreshold) ||
+        any(abs(fragments[1].color - fragments[2].color) > colorThreshold) || 
+        any(abs(fragments[1].color - fragments[3].color) > colorThreshold) ||
+        any(abs(fragments[2].color - fragments[3].color) > colorThreshold))
+        return;
+
+    if (any(abs(fragments[0].psfIndex - fragments[1].psfIndex) > depthThreshold) || 
+        any(abs(fragments[0].psfIndex - fragments[2].psfIndex) > depthThreshold) ||
+        any(abs(fragments[0].psfIndex - fragments[3].psfIndex) > depthThreshold) ||
+        any(abs(fragments[1].psfIndex - fragments[2].psfIndex) > depthThreshold) || 
+        any(abs(fragments[1].psfIndex - fragments[3].psfIndex) > depthThreshold) ||
+        any(abs(fragments[2].psfIndex - fragments[3].psfIndex) > depthThreshold))
+        return;
+
+    fragments[0].color = 0.25f * (fragments[0].color + fragments[1].color + fragments[2].color + fragments[3].color);
+    fragments[0].screenPosition = 0.25f * (fragments[0].screenPosition + fragments[1].screenPosition + fragments[2].screenPosition + fragments[3].screenPosition);
+    fragments[0].psfIndex = 0.25f * (fragments[0].psfIndex + fragments[1].psfIndex + fragments[2].psfIndex + fragments[3].psfIndex);
+    // sqrt(2)/2 * (fragmentSize - 1) is the fragmentSizeOffset
+    fragments[0].blurRadius = MaxBlurRadii(fragments[0].psfIndex).z + 0.70710678118f * float(fragmentWidth - 1);
+    fragments[0].fragmentSize *= 4;
+
+    fragmentBuffer[fragmentIndex] = fragments[0];
+    fragmentBuffer[fragmentIndex + stride].fragmentSize = 0;
+    fragmentBuffer[fragmentIndex + 2 * stride].fragmentSize = 0;
+    fragmentBuffer[fragmentIndex + 3 * stride].fragmentSize = 0;
+}
+
 [numthreads(TILE_SIZE, TILE_SIZE, 1)]
 void TileBufferSplat(uint3 id : SV_DispatchThreadID)
 {
@@ -588,13 +699,17 @@ void TileBufferSplat(uint3 id : SV_DispatchThreadID)
 
     const uint fragmentIndex = FragmentArrayIndex(fragmentCoord, eyeIndex);
     const uint countIndex = TileCountArrayIndex(tileCoord, eyeIndex);
+    const uint tileIndex = TileArrayIndex(tileCoord, eyeIndex);
 
     const FragmentData fragmentData = fragmentBuffer[fragmentIndex];
+
+    if (fragmentData.fragmentSize == 0)
+        return;
     
     SortIndex sortIndex;
     sortIndex.fragmentIndex = fragmentIndex;
     sortIndex.depth = ComputeSortDepth(fragmentData.screenPosition, fragmentData.psfIndex);
-    
+
     const int numTilesSplat = CEIL_DIV(maxBlurRadiusCurrent, TILE_SIZE);
 
     for (int i = -numTilesSplat; i <= numTilesSplat; i++)
@@ -603,8 +718,8 @@ void TileBufferSplat(uint3 id : SV_DispatchThreadID)
         {
             const uint2 neighborOffset = uint2(i, j);
             const uint2 neighborTileCoord = tileCoord + neighborOffset;
-            if (all(neighborOffset == uint2(0, 0)))
-                continue;
+            // if (all(neighborOffset == uint2(0, 0)))
+            //     continue;
             if (!IsValidTileCoord(neighborTileCoord))
                 continue;
             if (!OverlapsTile(neighborTileCoord, fragmentData.screenPosition, fragmentData.blurRadius))
@@ -834,7 +949,7 @@ float3 SamplePsf(const uint2 fragmentCoord, const FragmentData fragmentData, con
     }
     else
     {
-        return psfTexture.SampleLevel(samplerpsfTexture, texCoords, 0).rgb;
+        return psfTexture.SampleLevel(samplerpsfTexture, texCoords, 0).rgb * fragmentData.fragmentSize;
     }
 }
 
@@ -931,7 +1046,6 @@ void Convolve(uint3 id : SV_DispatchThreadID)
 {
     float3 result = ConvolveHelper(id);
 
-    // clear screen before writing over
     if (all(id.xy < resolution))
         oColorArray[id] = float4(result.xyz, 1.0f);
 }
@@ -941,8 +1055,22 @@ void ConvolveEditor(uint3 id : SV_DispatchThreadID)
 {
     float3 result = ConvolveHelper(id);
 
-    // clear screen before writing over
     if (all(id.xy < resolution))
         oColor[id.xy] = float4(result.xyz, 1.0f);
 }
 
+[numthreads(TILE_SIZE, TILE_SIZE, 1)]
+void CalculateDepthDiff(uint3 id : SV_DispatchThreadID)
+{
+    const uint2 fragmentCoord = id.xy;
+    if (any(fragmentCoord >= resolution))
+        return;
+
+    const uint2 fragmentIndices = uint2(FragmentArrayIndex(fragmentCoord, 0), FragmentArrayIndex(fragmentCoord, 1));
+
+    const float diff = abs(fragmentBuffer[fragmentIndices.x].psfIndex - fragmentBuffer[fragmentIndices.y].psfIndex);
+    const float normalization = 5.0f;
+
+    depthDiff[uint3(fragmentCoord.xy, 0)] = float4(diff / normalization, diff / normalization, diff / normalization, 1.0f);
+    depthDiff[uint3(fragmentCoord.xy, 1)] = float4(diff / normalization, diff / normalization, diff / normalization, 1.0f);
+}
