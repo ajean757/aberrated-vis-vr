@@ -7,6 +7,9 @@
 #pragma kernel BlurTest
 #pragma kernel InterpolatePSFTexture
 
+#pragma kernel TileBufferBuildEditor
+#pragma kernel ConvolveEditor
+
 //#pragma enable_cbuffer
 
 #define FLT_MAX 3.402823466e+38F
@@ -28,6 +31,9 @@
 //CBUFFER_START(TileSplatParams)
 cbuffer TileSplatParams
 {
+    // singlePass = true implies we are doing both eyes at once
+    bool singlePass;
+
     uint2 numTiles;
     uint2 resolution;
 
@@ -87,9 +93,14 @@ RWStructuredBuffer<SortIndex> tileSortBuffer;
 
 Texture2D<float4> iColor;
 RWTexture2D<float4> oColor;
+Texture2D<float2> iDepth;
+
+// Used for XR single pass instanced
+Texture2DArray<float4> iColorArray;
+RWTexture2DArray<float4> oColorArray;
 
 // depth is stored in .x
-Texture2D<float2> iDepth;
+Texture2DArray<float2> iDepthArray;
 
 struct PsfParam {
     uint minBlurRadius; // px
@@ -365,79 +376,27 @@ void InterpolatePSFTexture(uint3 id_in_tile : SV_DispatchThreadID)
     
 }
 
-uint FragmentArrayIndex(const uint2 fragmentCoord)
+// Index for fragmentBuffer
+uint FragmentArrayIndex(const uint2 fragmentCoord, const uint eyeIndex)
 {
-    return fragmentCoord.y * resolution.x + fragmentCoord.x;
+    return fragmentCoord.y * resolution.x + fragmentCoord.x + eyeIndex * resolution.x * resolution.y;
 }
 
 // Index for tileSortBuffer, first index of fragment in that tile
-uint TileArrayIndex(const uint2 tileCoord) 
+uint TileArrayIndex(const uint2 tileCoord, const uint eyeIndex)
 {
-    return (tileCoord.y * numTiles.x + tileCoord.x) * TILE_MAX_FRAGMENTS;
+    return (tileCoord.y * numTiles.x + tileCoord.x + eyeIndex * numTiles.x * numTiles.y) * TILE_MAX_FRAGMENTS;
 }
 
 // Index for tileFragmentCountBuffer, linearize 2d tile coord
-uint TileCountArrayIndex(const uint2 tileCoord)
+uint TileCountArrayIndex(const uint2 tileCoord, const uint eyeIndex)
 {
-    return tileCoord.y * numTiles.x + tileCoord.x;
+    return tileCoord.y * numTiles.x + tileCoord.x + eyeIndex * numTiles.x * numTiles.y;
 }
 
 bool IsValidTileCoord(const uint2 tileCoord)
 {
     return all(tileCoord >= uint2(0, 0)) && all(tileCoord < numTiles);
-}
-
-float3 SphericalCoordinates(const uint2 screenPosition, const float depth)
-{
-    
-    // fragmentData.vPsfIndex = sphericalCoordinates(fragmentCoord, fragmentDepth);
-    // 	vec3 sphericalCoordinatesOffAxis(const ivec2 screenPos, const float depth)
-    // {
-    // 	return convertSphericalCoordinates(screenToSphericalCoordinates(screenPos, sTiledSplatBlurData.vResolution, depth));
-    // }
-    // 	vec3 convertSphericalCoordinates(const vec3 sphericalCoords)
-    // {
-    // 	return vec3(convertIncidentAngles(sphericalCoords.xy), convertDepth(sphericalCoords.z));
-    // }
-    // // Converts the input incident angles to the appropriate representation for rendering
-    // vec2 convertIncidentAngles(const vec2 anglesRad)
-    // {
-    // 	return clamp
-    // 	(
-    // 		degrees(anglesRad),
-    // 		vec2(sTiledSplatBlurData.fHorizontalAnglesMin, sTiledSplatBlurData.fVerticalAnglesMin),
-    // 		vec2(sTiledSplatBlurData.fHorizontalAnglesMax, sTiledSplatBlurData.fVerticalAnglesMax)
-    // 	);
-    // }
-    // // Converts the input camera-space depth to the appropriate representation for rendering
-    // float convertDepth(const float depth)
-    // {
-    // 	return max(depth + sTiledSplatBlurData.fDepthOffset, 1e-4);
-    // }
-    // // Returns the spherical coordinates of the input screen position
-    // // Inputs:
-    // // - screenPos: screen-space coordinates [0, resolution - 1]
-    // // - depth: corresponding depth buffer value
-    // //
-    // // Returns:
-    // // - result[0:1]: horizontal and vertical angles, in radians
-    // // - result[2]:   distance, in meters
-    // vec3 screenToSphericalCoordinates(const ivec2 screenPos, const ivec2 resolution, const float depth)
-    // {
-
-    // 	const vec3 camPos = reconstructPositionCS(screenPos, resolution, depth); // Convert from clip-space to camera space
-
-    // 	const vec2 angles = vec2(atan2(camPos.x, -camPos.z), atan2(camPos.y, length(camPos.zx))); // azimuth and elevation terms
-    // 	const float radius = meters(length(camPos));
-    // 	return vec3(angles, radius);
-    // }
-
-    // // Returns the spherical coordinates of the input screen position
-    // vec3 screenToSphericalCoordinates(const ivec2 screenPos, const float depth)
-    // {
-    //     return screenToSphericalCoordinates(screenPos, ivec2(sRenderData.vResolution), depth);
-    // }
-
 }
 
 float LinearEyeDepth(float rawdepth)
@@ -545,16 +504,11 @@ bool OverlapsTile(const uint2 tileCoord, const int2 fragmentCoord, const float b
 // 	fragmentBuffer[fragmentIndex] = fragmentData;
 // }
 
-[numthreads(TILE_SIZE, TILE_SIZE, 1)]
-void TileBufferBuild(uint3 id : SV_DispatchThreadID)
+void TileBufferBuildHelper(const uint3 id, const float3 color, const float depth)
 {
     const uint2 fragmentCoord = id.xy;
-    if (any(fragmentCoord >= resolution))
-        return;
-    const uint fragmentIndex = FragmentArrayIndex(fragmentCoord);
-
-    const float3 color = iColor[fragmentCoord].xyz;
-    const float depth = iDepth[fragmentCoord].x;
+    const uint eyeIndex = id.z;
+    const uint fragmentIndex = FragmentArrayIndex(fragmentCoord, eyeIndex);
 
     FragmentData fragmentData;
     fragmentData.color = color;
@@ -577,8 +531,8 @@ void TileBufferBuild(uint3 id : SV_DispatchThreadID)
     //const uint2 fragmentCoord = id.xy;
 
     //const uint fragmentIndex = FragmentArrayIndex(fragmentCoord);
-    const uint tileIndex = TileArrayIndex(tileCoord);
-    const uint countIndex = TileCountArrayIndex(tileCoord);
+    const uint tileIndex = TileArrayIndex(tileCoord, eyeIndex);
+    const uint countIndex = TileCountArrayIndex(tileCoord, eyeIndex);
 
     //FragmentData fragmentData = fragmentBuffer[fragmentIndex];
 
@@ -598,17 +552,42 @@ void TileBufferBuild(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(TILE_SIZE, TILE_SIZE, 1)]
+void TileBufferBuild(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= resolution))
+        return;
+
+    const float3 color = iColorArray[id].xyz;
+    const float depth = iDepthArray[id].x;
+
+    TileBufferBuildHelper(id, color, depth);
+}
+
+[numthreads(TILE_SIZE, TILE_SIZE, 1)]
+void TileBufferBuildEditor(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= resolution))
+        return;
+
+    const float3 color = iColor[id.xy].xyz;
+    const float depth = iDepth[id.xy].x;
+
+    TileBufferBuildHelper(id, color, depth);
+}
+
+[numthreads(TILE_SIZE, TILE_SIZE, 1)]
 void TileBufferSplat(uint3 id : SV_DispatchThreadID)
 {
     const uint2 tileCoord = id.xy / TILE_SIZE;
     const uint2 threadId = id.xy % TILE_SIZE;
     const uint2 fragmentCoord = id.xy;
+    const uint eyeIndex = id.z;
 
     if (any(fragmentCoord >= resolution))
         return;
 
-    const uint fragmentIndex = FragmentArrayIndex(fragmentCoord);
-    const uint countIndex = TileCountArrayIndex(tileCoord);
+    const uint fragmentIndex = FragmentArrayIndex(fragmentCoord, eyeIndex);
+    const uint countIndex = TileCountArrayIndex(tileCoord, eyeIndex);
 
     const FragmentData fragmentData = fragmentBuffer[fragmentIndex];
     
@@ -631,8 +610,8 @@ void TileBufferSplat(uint3 id : SV_DispatchThreadID)
             if (!OverlapsTile(neighborTileCoord, fragmentData.screenPosition, fragmentData.blurRadius))
                 continue;
 
-            const uint neighborTileIndex = TileArrayIndex(neighborTileCoord);
-            const uint neighborCountIndex = TileCountArrayIndex(neighborTileCoord);
+            const uint neighborTileIndex = TileArrayIndex(neighborTileCoord, eyeIndex);
+            const uint neighborCountIndex = TileCountArrayIndex(neighborTileCoord, eyeIndex);
 
             uint neighborFragmentCount;
             InterlockedAdd(tileFragmentCountBuffer[neighborCountIndex], 1, neighborFragmentCount);
@@ -653,30 +632,37 @@ void BlurTest(uint3 id : SV_DispatchThreadID)
     // oColor[id.xy] = float4(linearDepth, linearDepth, linearDepth, 1.0f);
     // return;
     
-    uint texWidth;
-    uint texHeight;
-    iColor.GetDimensions(texWidth, texHeight);
+    uint texWidth = resolution.x;
+    uint texHeight = resolution.y;
+    uint texDepth = 2;
+    //oColor.GetDimensions(texWidth, texHeight, texDepth);
+
     // oColor[id.xy] = float4()
 
     // float3 texCoords = float3((float) id.x / texWidth, (float)id.y)
     // psfTexture.SampleLevel(samplerpsfTexture, texCoords, 0)
         
-    if (id.x >= texWidth || id.y >= texHeight)
+    if (id.x >= texWidth || id.y >= texHeight || id.z >= texDepth)
         return;
-    float4 color = float4(0.0, 0.0, 0.0, 1.0);
-    uint cnt = 0;
-    for (int i = -BOX_BLUR_RADIUS; i <= BOX_BLUR_RADIUS; i++)
-    {
-        for (int j = -BOX_BLUR_RADIUS; j <= BOX_BLUR_RADIUS; j++)
-        {
-            if (id.x + i >= 0 && id.x + i < texWidth && id.y + j >= 0 && id.y + j < texHeight) 
-            {
-                color += iColor[id.xy + int2(i, j)] * BOX_BLUR_WEIGHT;
-                cnt++;
-            }
-        }
-    }
-    oColor[id.xy] = color;
+    // float4 color = float4(0.0, 0.0, 0.0, 1.0);
+    // uint cnt = 0;
+    // for (int i = -BOX_BLUR_RADIUS; i <= BOX_BLUR_RADIUS; i++)
+    // {
+    //     for (int j = -BOX_BLUR_RADIUS; j <= BOX_BLUR_RADIUS; j++)
+    //     {
+    //         if (id.x + i >= 0 && id.x + i < texWidth && id.y + j >= 0 && id.y + j < texHeight) 
+    //         {
+    //             color += iColor.Load(int4(id, 0)) * BOX_BLUR_WEIGHT;
+    //             //color += iColor[id.xy + int2(i, j), id.z] * BOX_BLUR_WEIGHT;
+    //             cnt++;
+    //         }
+    //     }
+    // }
+    if (id.z == 0)
+        oColorArray[id] = float4(1.0, 0.0, 0.0, 1.0);
+    else
+        oColorArray[id] = float4(0.0, 1.0, 0.0, 1.0);
+    //oColor[id] = color;
 }
 
 groupshared uint fragmentIndices[TILE_MAX_FRAGMENTS];
@@ -684,11 +670,12 @@ groupshared float fragmentDepths[TILE_MAX_FRAGMENTS];
 
 [numthreads(SORT_GROUP_SIZE,1,1)]
 void SortFragments(uint3 id_dispatch : SV_DispatchThreadID) {
-    uint threadId = id_dispatch.x;
-    uint2 tileCoord = id_dispatch.yz;
+    const uint threadId = id_dispatch.x % SORT_GROUP_SIZE;
+    const uint eyeIndex = id_dispatch.x / SORT_GROUP_SIZE;
+    const uint2 tileCoord = id_dispatch.yz;
     
-    const uint countIndex = TileCountArrayIndex(tileCoord);
-    const uint tileIndex = TileArrayIndex(tileCoord);
+    const uint countIndex = TileCountArrayIndex(tileCoord, eyeIndex);
+    const uint tileIndex = TileArrayIndex(tileCoord, eyeIndex);
 
     // fixup tile fragment count
     if (threadId == 0)
@@ -816,7 +803,7 @@ float RealPsfIndex(float psfIndex) {
     return startLayer + numLayers * frac(psfIds[2]);
 }
 
-float3 SamplePsf(const uint2 fragmentCoord, const FragmentData fragmentData)
+float3 SamplePsf(const uint2 fragmentCoord, const FragmentData fragmentData, const uint eyeIndex)
 {
     // PSFs are centered in 3D texture
     uint maxPsfRadius = maxBlurRadiusCurrent;
@@ -854,18 +841,18 @@ float3 SamplePsf(const uint2 fragmentCoord, const FragmentData fragmentData)
 groupshared FragmentData tileFragments[SHARED_ARRAY_SIZE];
 groupshared uint fragmentCount;
 
-[numthreads(TILE_SIZE, TILE_SIZE, 1)]
-void Convolve(uint3 id : SV_DispatchThreadID)
+float3 ConvolveHelper(uint3 id)
 {
     const uint2 tileCoord = id.xy / TILE_SIZE;
     const uint2 threadId = id.xy % TILE_SIZE;
     const uint2 fragmentCoord = id.xy;
+    const uint eyeIndex = id.z;
 
     const bool invalid = any(fragmentCoord >= resolution);
 
-    const uint fragmentIndex = FragmentArrayIndex(fragmentCoord);
-    const uint countIndex = TileCountArrayIndex(tileCoord);
-    const uint tileIndex = TileArrayIndex(tileCoord);
+    const uint fragmentIndex = FragmentArrayIndex(fragmentCoord, eyeIndex);
+    const uint countIndex = TileCountArrayIndex(tileCoord, eyeIndex);
+    const uint tileIndex = TileArrayIndex(tileCoord, eyeIndex);
 
     //const uint fragmentCount = tileFragmentCountBuffer[countIndex];
 
@@ -905,7 +892,7 @@ void Convolve(uint3 id : SV_DispatchThreadID)
                 //     oColor[fragmentCoord] = float4(fragmentData.psfIndex, fragmentData.psfIndex, fragmentData.psfIndex, 1.0f);
                 //     break;
                 // }
-                float3 weight = SamplePsf(fragmentCoord, fragmentData);
+                float3 weight = SamplePsf(fragmentCoord, fragmentData, eyeIndex);
 
                 /* Regular weighted summation */
                 //result += weight * fragmentData.color;
@@ -933,14 +920,29 @@ void Convolve(uint3 id : SV_DispatchThreadID)
 
     // 	// result += (1.0 - alpha) * weight * fragmentData.color;
     // 	// alpha = weight + (1.0 - weight) * alpha;
-    // }
-    
+
+    if (all(alpha != 0.0f))
+        return result / alpha;
+    return float3(0.0f, 0.0f, 0.0f);
+}
+
+[numthreads(TILE_SIZE, TILE_SIZE, 1)]
+void Convolve(uint3 id : SV_DispatchThreadID)
+{
+    float3 result = ConvolveHelper(id);
+
     // clear screen before writing over
-    oColor[fragmentCoord] = float4(0.0f, 0.0f, 0.0f, 1.0f);
-    if (any(result != 0.0f))
-    {
-        oColor[fragmentCoord] = float4(result / alpha, 1.0f);
-    }
-    // oColor[fragmentCoord] = float4(result / alpha, 1);
+    if (all(id.xy < resolution))
+        oColorArray[id] = float4(result.xyz, 1.0f);
+}
+
+[numthreads(TILE_SIZE, TILE_SIZE, 1)]
+void ConvolveEditor(uint3 id : SV_DispatchThreadID)
+{
+    float3 result = ConvolveHelper(id);
+
+    // clear screen before writing over
+    if (all(id.xy < resolution))
+        oColor[id.xy] = float4(result.xyz, 1.0f);
 }
 

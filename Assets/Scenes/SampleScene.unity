@@ -1002,7 +1002,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1498468630
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1021,6 +1021,9 @@ MonoBehaviour:
     serializedVersion: 2
     m_Bits: 4294967295
   hitMarkerPrefab: {fileID: 1881414121713987187, guid: 7ef0bc16f934b464784ec1a586636016, type: 3}
+  centerScreenDepth: 0
+  computeShader: {fileID: 0}
+  markerOn: 0
 --- !u!4 &1498468631
 Transform:
   m_ObjectHideFlags: 0
