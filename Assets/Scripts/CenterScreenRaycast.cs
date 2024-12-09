@@ -20,6 +20,11 @@ public class CenterScreenRaycast : MonoBehaviour
             return;
         }
 
+        if (aberrationFeature == null)
+				{
+            return;
+				}
+
         // Perform the raycast
         Ray ray = new Ray(vrCamera.transform.position, vrCamera.transform.forward);
 

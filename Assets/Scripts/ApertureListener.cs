@@ -27,6 +27,6 @@ public class ApertureController : MonoBehaviour
     }
     private void Update()
     {
-        Debug.Log(apertureSlider.value.ToString());
+        //Debug.Log(apertureSlider.value.ToString());
     }
 }

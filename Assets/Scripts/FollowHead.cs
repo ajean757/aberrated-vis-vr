@@ -14,6 +14,7 @@ public class StickyUI : MonoBehaviour
 
             // Make the UI face the camera
             transform.rotation = Quaternion.LookRotation(transform.position - cameraTransform.position);
+
         }
     }
 }

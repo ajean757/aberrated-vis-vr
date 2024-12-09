@@ -23,7 +23,9 @@ public class AberrationRendererFeature : ScriptableRendererFeature
     [SerializeField] private ComputeShader computeShader;
     //private Material material;
     private AberrationRenderPass aberrationRenderPass;
+    [Delayed]
     public float depth;
+    [Delayed]
     public float aperture;
 
     public override void Create()
@@ -85,6 +87,22 @@ public class AberrationRendererFeature : ScriptableRendererFeature
         aperture = newAperture;
         aberrationRenderPass?.SetDepth(aperture);
     }
+
+    public void UpdateAberration(Camera.StereoscopicEye eye, string psfSetName)
+		{
+        if (eye == Camera.StereoscopicEye.Left)
+				{
+            settings.PSFSet = psfSetName;
+				}
+        else
+				{
+            settings.RightPSFSet = psfSetName;
+				}
+        aberrationRenderPass.psfStack = null;
+        aberrationRenderPass.rightPsfStack = null;
+        aberrationRenderPass.UpdateAberrationSettings(settings);
+        aberrationRenderPass?.SetParams(aberrationRenderPass.resolution, true);
+		}
 }
 
 [Serializable]

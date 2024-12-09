@@ -41,6 +41,8 @@
 #define DEPTH_SIMILARITY_THRESHOLD 0.01f
 #define BLUR_SIZE_THRESHOLD 2
 
+#define ALPHA_THRESHOLD 0.5
+
 //CBUFFER_START(TileSplatParams)
 cbuffer TileSplatParams
 {
@@ -1062,12 +1064,11 @@ float3 ConvolveHelper(uint3 id)
             tileFragments[threadIndex] = fragmentBuffer[sortIndex.fragmentIndex];
         GroupMemoryBarrierWithGroupSync();
 
-        if (!invalid)
+        if (!invalid)// && any(alpha <= ALPHA_THRESHOLD))
         {
             uint cnt = min(fragmentCount - batchId * SHARED_ARRAY_SIZE, SHARED_ARRAY_SIZE);
             for (uint i = 0; i < cnt; i++)
             {
-                
                 FragmentData fragmentData = tileFragments[i];
                 // if (all(uint2(fragmentData.screenPosition.x, fragmentData.screenPosition.y) == fragmentCoord))
                 // {
@@ -1080,8 +1081,8 @@ float3 ConvolveHelper(uint3 id)
                 //result += weight * fragmentData.color;
 
                 /* Back to front alpha blending */
-                // result = weight * fragmentData.color + (1.0 - weight) * result;
-                // alpha = weight + (1.0 - weight) * alpha;
+                 //result = weight * fragmentData.color + (1.0 - weight) * result;
+                 //alpha = weight + (1.0 - weight) * alpha;
 
                 /* Front to back alpha blending */
                 result += (1.0 - alpha) * weight * fragmentData.color;
@@ -1103,8 +1104,13 @@ float3 ConvolveHelper(uint3 id)
     // 	// result += (1.0 - alpha) * weight * fragmentData.color;
     // 	// alpha = weight + (1.0 - weight) * alpha;
 
+    //return alpha;
     if (all(alpha != 0.0f))
+    {
+        //if (eyeIndex == 0)
+        //    return result;// / alpha;
         return result / alpha;
+    }
     return float3(0.0f, 0.0f, 0.0f);
 }
 
