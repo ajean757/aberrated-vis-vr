@@ -27,6 +27,8 @@ public class AberrationRendererFeature : ScriptableRendererFeature
     public float depth;
     [Delayed]
     public float aperture;
+    [Delayed]
+    public int mergePasses;
 
     public override void Create()
     {
@@ -44,6 +46,7 @@ public class AberrationRendererFeature : ScriptableRendererFeature
 
         aberrationRenderPass.SetDepth(depth);
         aberrationRenderPass.SetAperture(aperture);
+        aberrationRenderPass.mergePasses = mergePasses;
     }
 
     public override void AddRenderPasses(ScriptableRenderer renderer,
@@ -85,7 +88,7 @@ public class AberrationRendererFeature : ScriptableRendererFeature
     public void UpdateAperture(float newAperture)
     {
         aperture = newAperture;
-        aberrationRenderPass?.SetDepth(aperture);
+        aberrationRenderPass?.SetAperture(aperture);
     }
 
     public void UpdateAberration(Camera.StereoscopicEye eye, string psfSetName)
@@ -102,6 +105,13 @@ public class AberrationRendererFeature : ScriptableRendererFeature
         aberrationRenderPass.rightPsfStack = null;
         aberrationRenderPass.UpdateAberrationSettings(settings);
         aberrationRenderPass?.SetParams(aberrationRenderPass.resolution, true);
+		}
+
+    public void UpdateMergePasses(int mergePasses)
+		{
+        this.mergePasses = mergePasses;
+        if (aberrationRenderPass != null)
+            aberrationRenderPass.mergePasses = mergePasses;
 		}
 }
 

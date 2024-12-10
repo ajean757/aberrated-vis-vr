@@ -21,7 +21,7 @@ MonoBehaviour:
   m_OverrideGlobalSceneList: 0
   m_Scenes:
   - m_enabled: 1
-    m_path: Assets/Scenes/SampleScene.unity
+    m_path: Assets/Scenes/monalisatext.unity
   m_ScriptingDefines: []
   m_PlayerSettingsYaml:
     m_Settings:
@@ -891,7 +891,7 @@ MonoBehaviour:
     - line: '|   m_RenderingPath: 1'
     - line: '|   m_MobileRenderingPath: 1'
     - line: '|   metroPackageName: aberrated-vr-vis'
-    - line: '|   metroPackageVersion: '
+    - line: '|   metroPackageVersion: 1.0.0.0'
     - line: '|   metroCertificatePath: '
     - line: '|   metroCertificatePassword: '
     - line: '|   metroCertificateSubject: '
@@ -899,7 +899,7 @@ MonoBehaviour:
     - line: '|   metroCertificateNotAfter: 0000000000000000'
     - line: '|   metroApplicationDescription: aberrated-vr-vis'
     - line: '|   wsaImages: {}'
-    - line: '|   metroTileShortName: '
+    - line: '|   metroTileShortName: aberrated-vr-vis'
     - line: '|   metroTileShowName: 0'
     - line: '|   metroMediumTileShowName: 0'
     - line: '|   metroLargeTileShowName: 0'

@@ -6,14 +6,17 @@ EditorBuildSettings:
   serializedVersion: 2
   m_Scenes:
   - enabled: 1
-    path: Assets/Scenes/SampleScene.unity
+    path: Assets/Scenes/monalisatext.unity
     guid: 99c9720ab356a0642a771bea13969a05
   - enabled: 1
-    path: Assets/Scenes/placeholder1.unity
+    path: Assets/Scenes/dungeon.unity
     guid: 95d6c546c74037242ae270ab7c03fe7a
   - enabled: 1
-    path: Assets/Scenes/placeholder2.unity
+    path: Assets/Scenes/christmas.unity
     guid: 67a72f02373ebc04b9551f145c002ded
+  - enabled: 1
+    path: Assets/Scenes/sponza.unity
+    guid: 47d971d9cb54c0546b233498f3a92565
   m_configObjects:
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
     com.unity.xr.management.loader_settings: {fileID: 11400000, guid: 10078b4dc70c6be4c8e39057e00ea33b, type: 2}

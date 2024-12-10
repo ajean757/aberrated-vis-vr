@@ -69,7 +69,7 @@ public class AberrationRenderPass : ScriptableRenderPass
 
     private const int MERGE_GROUP_SIZE = 8;
 
-    private const int MERGE_PASSES = 1;
+    //private const int MERGE_PASSES = 1;
 
     // hardcoded to have 256 interpolated PSFs at most
     private const int INTERPOLATION_BUFFER_SIZE = 1 << 7;
@@ -200,6 +200,7 @@ public class AberrationRenderPass : ScriptableRenderPass
 
     public float apertureDiameter;
     public float focusDistance;
+    public int mergePasses;
 
     public void SetDepth(float newDepth)
     {
@@ -991,7 +992,7 @@ public class AberrationRenderPass : ScriptableRenderPass
             builder.SetRenderFunc((PassData data, ComputeGraphContext cgContext) => ExecutePass(data, cgContext));
         }
 
-				for (int i = 0; i < MERGE_PASSES; i++)
+				for (int i = 0; i < mergePasses; i++)
 				{
 						using (var builder = renderGraph.AddComputePass("TileBufferMerge" + i.ToString(), out PassData passData))
 						{

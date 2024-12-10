@@ -37,9 +37,9 @@
 #define RIGHT_EYE (eyeIndex == 1 && separateAberrations)
 
 // for merge
-#define COLOR_SIMILARITY_THRESHOLD 0.0f
-#define DEPTH_SIMILARITY_THRESHOLD 0.01f
-#define BLUR_SIZE_THRESHOLD 2
+#define COLOR_SIMILARITY_THRESHOLD 0.01f
+#define DEPTH_SIMILARITY_THRESHOLD 0.0001f
+#define BLUR_SIZE_THRESHOLD 3
 
 #define ALPHA_THRESHOLD 0.5
 
@@ -712,7 +712,7 @@ void TileBufferMerge(uint3 id : SV_DispatchThreadID)
     if (minBlurRadius < BLUR_SIZE_THRESHOLD)
         return;
 
-    const float3 colorThreshold = float3(0.0f, 0.0f, 0.0f);//minBlurRadius * COLOR_SIMILARITY_THRESHOLD;
+    const float3 colorThreshold = minBlurRadius * COLOR_SIMILARITY_THRESHOLD;
     const float depthThreshold = minBlurRadius * DEPTH_SIMILARITY_THRESHOLD;
 
     if (any(abs(fragments[0].color - fragments[1].color) > colorThreshold) || 
