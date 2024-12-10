@@ -129,7 +129,7 @@ public class UIManager : MonoBehaviour
 				if (XRSettings.enabled && XRSettings.eyeTextureResolutionScale != resolution)
 				{
 						XRSettings.eyeTextureResolutionScale = resolution;
-						Debug.Log("setting resolution scale to " + resolution.ToString());
+						//Debug.Log("setting resolution scale to " + resolution.ToString());
 				}
 		}
 
