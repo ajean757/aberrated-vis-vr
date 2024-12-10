@@ -828,7 +828,7 @@ public class AberrationRenderPass : ScriptableRenderPass
         //     PrintSortIndexBuffer(new Vector2Int(20, 20));
         // }
         // could be garbage if nothing has written to it yet
-        Debug.Log("Tile Fragment Buffer Occupancy: " + TileFragmentBufferOccupancy().ToString());
+        // Debug.Log("Tile Fragment Buffer Occupancy: " + TileFragmentBufferOccupancy().ToString());
 
         UniversalResourceData resourceData = frameData.Get<UniversalResourceData>();
         UniversalCameraData cameraData = frameData.Get<UniversalCameraData>();
@@ -1180,10 +1180,10 @@ public class AberrationRenderPass : ScriptableRenderPass
         Debug.Log(depthStr);
     }
 
-    public float TileFragmentBufferOccupancy()
+    public float TileFragmentBufferOccupancy(int eyeIndex)
     {
         uint[] countBuffer = new uint[numTiles.x * numTiles.y];
-        tileFragmentCountBuffer.GetData(countBuffer, 0, 0, numTiles.x * numTiles.y);
+        tileFragmentCountBuffer.GetData(countBuffer, 0, eyeIndex * numTiles.x * numTiles.y, numTiles.x * numTiles.y);
 
         uint sum = 0;
         for (int i = 0; i < numTiles.x * numTiles.y; i++)

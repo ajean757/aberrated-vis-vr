@@ -241,7 +241,7 @@ public class PSFStack
 
         int n = PSFCount(); // Number of PSFs
 
-				System.Diagnostics.Stopwatch timer = System.Diagnostics.Stopwatch.StartNew();
+				//System.Diagnostics.Stopwatch timer = System.Diagnostics.Stopwatch.StartNew();
 
         using (BinaryReader br = new BinaryReader(File.OpenRead(psfFilename)))
         {
@@ -284,8 +284,8 @@ public class PSFStack
             }
         }
 
-        timer.Stop();
-        Debug.Log("read in PSFs: " + (float)timer.ElapsedMilliseconds / 1000.0f);
+        //timer.Stop();
+        //Debug.Log("read in PSFs: " + (float)timer.ElapsedMilliseconds / 1000.0f);
     }
 
     public void ReadPsfStackText(string psfSetName)

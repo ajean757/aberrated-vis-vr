@@ -29,6 +29,7 @@ public class UIManager : MonoBehaviour
     public InputActionReference moveAction;
     public InputActionReference navigateAction;
     public InputActionReference triggerAction;
+    public InputActionReference triggerRightAction;
 
     public AberrationRendererFeature feature;
 
@@ -61,6 +62,12 @@ public class UIManager : MonoBehaviour
 				{
             triggerAction.action.Enable();
             triggerAction.action.performed += OnTriggerPressed;
+				}
+
+        if (triggerRightAction != null)
+				{
+            triggerRightAction.action.Enable();
+            triggerRightAction.action.performed += OnTriggerRightPressed;
 				}
 
         resolution = 0.5f;
@@ -108,6 +115,13 @@ public class UIManager : MonoBehaviour
         aberrationToggle = !aberrationToggle;
         feature.SetActive(ActiveAberration);
     }
+
+    public void OnTriggerRightPressed(InputAction.CallbackContext context)
+		{
+        float l = feature.aberrationRenderPass.TileFragmentBufferOccupancy(0);
+        float r = feature.aberrationRenderPass.TileFragmentBufferOccupancy(1);
+        Debug.Log("Tile Fragment Buffer Occupancy: " + l.ToString() + " " + r.ToString());
+		}
 
     // Update is called once per frame
     void Update()

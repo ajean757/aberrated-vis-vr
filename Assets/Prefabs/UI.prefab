@@ -386,6 +386,7 @@ MonoBehaviour:
   moveAction: {fileID: 6972639530819350904, guid: c348712bda248c246b8c49b3db54643f, type: 3}
   navigateAction: {fileID: -7967456002180160679, guid: c348712bda248c246b8c49b3db54643f, type: 3}
   triggerAction: {fileID: -6395602842196007441, guid: c348712bda248c246b8c49b3db54643f, type: 3}
+  triggerRightAction: {fileID: 3279264004350380116, guid: c348712bda248c246b8c49b3db54643f, type: 3}
   feature: {fileID: -944053479525488607, guid: f288ae1f4751b564a96ac7587541f7a2, type: 2}
   aberrationToggle: 0
 --- !u!114 &981170632012194626

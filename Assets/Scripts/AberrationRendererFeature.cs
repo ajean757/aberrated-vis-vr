@@ -22,7 +22,7 @@ public class AberrationRendererFeature : ScriptableRendererFeature
     //[SerializeField] private Shader shader;
     [SerializeField] private ComputeShader computeShader;
     //private Material material;
-    private AberrationRenderPass aberrationRenderPass;
+    public AberrationRenderPass aberrationRenderPass;
     [Delayed]
     public float depth;
     [Delayed]

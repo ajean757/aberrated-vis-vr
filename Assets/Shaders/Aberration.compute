@@ -38,8 +38,8 @@
 
 // for merge
 #define COLOR_SIMILARITY_THRESHOLD 0.01f
-#define DEPTH_SIMILARITY_THRESHOLD 0.0001f
-#define BLUR_SIZE_THRESHOLD 3
+#define DEPTH_SIMILARITY_THRESHOLD 0.01f
+#define BLUR_SIZE_THRESHOLD 2
 
 #define ALPHA_THRESHOLD 0.5
 
@@ -977,6 +977,42 @@ float RealPsfIndex(float psfIndex, uint eyeIndex) {
 
     return startLayer + numLayers * frac(psfIds[2]);
 }
+/* This one is slower :(
+float3 SamplePsfTwoSample(const uint2 fragmentCoord, const FragmentData fragmentData, uint eyeIndex) 
+{
+    uint maxPsfRadius = RIGHT_EYE ? rightMaxBlurRadiusCurrent : maxBlurRadiusCurrent;
+    float psfIndex = RealPsfIndex(fragmentData.psfIndex, eyeIndex);
+
+    int2 delta = int2(fragmentCoord.x - fragmentData.screenPosition.x, fragmentCoord.y - fragmentData.screenPosition.y);
+    uint lowerLayerExtent = RIGHT_EYE ? rightPsfTextureLayerExtents[floor(psfIndex)] : psfTextureLayerExtents[floor(psfIndex)];
+    uint upperLayerExtent = RIGHT_EYE ? rightPsfTextureLayerExtents[ceil(psfIndex)] : psfTextureLayerExtents[ceil(psfIndex)];
+    uint maxExtent = max(lowerLayerExtent, upperLayerExtent);
+
+    if (any(abs(delta) > int2(maxExtent, maxExtent)))
+    {
+        return float3(0.0f, 0.0f, 0.0f);
+    }
+
+    int4 texCoordIndicesLower = int4(maxPsfRadius + fragmentCoord.x - fragmentData.screenPosition.x, maxPsfRadius + fragmentCoord.y - fragmentData.screenPosition.y, floor(psfIndex), 0);
+    int4 texCoordIndicesUpper = int4(maxPsfRadius + fragmentCoord.x - fragmentData.screenPosition.x, maxPsfRadius + fragmentCoord.y - fragmentData.screenPosition.y, ceil(psfIndex), 0);
+
+    uint width, height, depth;
+    if (RIGHT_EYE)
+    {
+        rightPsfTexture.GetDimensions(width, height, depth);
+    }
+    else
+    {
+        psfTexture.GetDimensions(width, height, depth);
+    }
+
+    // HLSL guarantees out-of-bound accesses return 0
+    float3 lower = RIGHT_EYE ? rightPsfTexture.Load(texCoordIndicesLower).rgb : psfTexture.Load(texCoordIndicesLower).rgb;
+    float3 upper = RIGHT_EYE ? rightPsfTexture.Load(texCoordIndicesUpper).rgb : psfTexture.Load(texCoordIndicesUpper).rgb;
+    return lerp(lower, upper, frac(psfIndex));
+    
+}
+*/
 
 float3 SamplePsf(const uint2 fragmentCoord, const FragmentData fragmentData, uint eyeIndex)
 {
@@ -1118,6 +1154,16 @@ float3 ConvolveHelper(uint3 id)
 void Convolve(uint3 id : SV_DispatchThreadID)
 {
     float3 result = ConvolveHelper(id);
+
+    //const uint2 fragmentCoord = id.xy;
+    //const uint eyeIndex = id.z;
+    //const uint fragmentIndex = FragmentArrayIndex(fragmentCoord, eyeIndex);
+    //FragmentData fragment = fragmentBuffer[fragmentIndex];
+    //float minBlurRadius = MinBlurRadii(fragment.psfIndex, eyeIndex).z;
+    //if (all(id.xy < resolution))
+    //    oColorArray[id] = float4(fragment.psfIndex / minBlurRadius, minBlurRadius, 0.0f, 1.0f);
+    //return fragment.color / minBlurRadius;
+    //return fragment.depth / minBlurRadius;
 
     if (all(id.xy < resolution))
         oColorArray[id] = float4(result.xyz, 1.0f);
